@@ -1,7 +1,7 @@
 from fastapi import HTTPException, Depends
 from bson import ObjectId
-from model.User import UserCreate, UserInDB, UserResponse, UserBase
-from utils.db import Database
+from model.User import UserCreate, UserInDB, UserUpdate, UserResponse
+from utils.db import db
 from passlib.context import CryptContext
 import bcrypt
 
@@ -18,44 +18,90 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     password_byte_enc = plain_password.encode('utf-8')
     hashed_password_bytes = hashed_password.encode('utf-8')  # Convert stored hash back to bytes
-    return bcrypt.checkpw(password=password_byte_enc, hashed_password=hashed_password_bytes)
+    return bcrypt.checkpw(password_byte_enc, hashed_password_bytes)
 
 # Create a new user
-async def create(user: UserCreate, db: Database = Depends(Database)):
-    # Check if the user already exists
-    existing_user = await db.db.users.find_one({"$or": [{"email": user.email}, {"username": user.username}]})
+async def create(user: UserCreate, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    existing_user = await db.users.find_one({"$or": [{"email": user.email}, {"username": user.username}]})
     if existing_user:
         if existing_user.get("email") == user.email:
             raise HTTPException(status_code=400, detail="Email already registered")
         else:
             raise HTTPException(status_code=400, detail="Username already registered")
     
-    # Hash the password
     hashed_password = hash_password(user.password)
-
-    # Prepare the user data for insertion
     user_data = UserInDB(**user.model_dump(), hashed_password=hashed_password)
 
-    # Insert the user into the database
     try:
-        result = await db.db.users.insert_one(user_data.model_dump(by_alias=True))
+        result = await db.users.insert_one(user_data.model_dump(by_alias=True))
         user_data.id = str(result.inserted_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating user: {e}")
     
     return user_data
 
-async def remove(user_id: str, db: Database = Depends(Database)):
-    # Check if the user exists
-    user = await db.db.users.find_one({"_id": ObjectId(user_id)})
+async def remove(user_id: str, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Delete the user from the database
     try:
-        await db.db.users.delete_one({"_id": ObjectId(user_id)})
+        await db.users.delete_one({"_id": ObjectId(user_id)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting user: {e}")
     
     return {"message": f"User {user_id} deleted successfully"}
 
+async def update(user_id: str, user_update: UserUpdate, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    update_data = user_update.model_dump(exclude_unset=True)
+    
+    try:
+        await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating user: {e}")
+    
+    # Fetch the updated user document
+    updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not updated_user:
+        raise HTTPException(status_code=500, detail="Error retrieving updated user")
+    
+    # Convert the MongoDB document to the response model
+    updated_user["_id"] = str(updated_user["_id"])  # Convert ObjectId to string
+    return UserResponse(**updated_user).model_dump(by_alias=True)
+
+async def get(user_id: str, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user).model_dump(by_alias=True)
+
+async def get_all(limit: int = 10, skip: int = 0, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    try:
+        users_cursor = db.users.find().skip(skip).limit(limit)
+        users = await users_cursor.to_list(length=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving users: {e}")
+    
+    for user in users:
+        user["_id"] = str(user["_id"])
+    return [UserResponse(**user).model_dump(by_alias=True) for user in users]

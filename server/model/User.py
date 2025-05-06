@@ -1,28 +1,9 @@
-from pydantic import BaseModel, EmailStr, Field ,field_validator, model_validator, GetJsonSchemaHandler
-from pydantic_core import core_schema
+from bson import ObjectId
+from pydantic import BaseModel, ConfigDict, EmailStr, Field ,field_validator, model_validator
 from datetime import datetime, timezone
 from typing import Optional
 from typing_extensions import Self
-from bson import ObjectId
-
-# Custom Pydantic Type for MongoDB ObjectId
-class PyObjectId(ObjectId):
-    @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
-
-    @classmethod
-    def validate(cls, v):
-        if not ObjectId.is_valid(v):
-            raise ValueError('Invalid ObjectId')
-        return ObjectId(v)
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, handler: GetJsonSchemaHandler):
-        # Customize the JSON schema for PyObjectId
-        json_schema = handler.resolve_ref_schema(handler(core_schema))
-        json_schema.update(type="string")
-        return json_schema
+from utils.custom_types import PyObjectId
 
 # User Base Model
 class UserBase(BaseModel):
@@ -52,8 +33,14 @@ class UserBase(BaseModel):
         if not username.isalnum():
             raise ValueError('Username must be alphanumeric')
         return username
+    
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
 
-# User Inheritance for Create and Update
+# User Inheritance for Create
 class UserCreate(UserBase):
     password: str
     password_repeat: str
@@ -76,21 +63,32 @@ class UserCreate(UserBase):
         if self.password != self.password_repeat:
             raise ValueError('Passwords do not match')
         return self
+    
+# User Inheritance for Update
+class UserUpdate(UserBase):
+    full_name: Optional[str] = None
 
 # Class for User Model in Database
 class UserInDB(UserBase):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     hashed_password: str
 
-    class Config:
-        from_attributes = True
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str},
+        arbitrary_types_allowed=True
+    )
 
 # Class for Returning User Response
 class UserResponse(UserBase):
-    id: str
+    id: str = Field(alias="_id")
 
-    class Config:
-        from_attributes = True
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
 
 # Class for Deleting User Response
 class DeleteUserResponse(BaseModel):
