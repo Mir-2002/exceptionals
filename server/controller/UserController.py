@@ -1,7 +1,8 @@
 from fastapi import HTTPException, Depends
 from bson import ObjectId
-from model.User import UserCreate, UserInDB, UserUpdate, UserResponse
+from model.User import UserCreate, UserInDB, UserUpdate, UserResponse, UserLoginResponse, UserUpdateResponse
 from utils.db import db
+from utils.auth import create_access_token
 from passlib.context import CryptContext
 import bcrypt
 
@@ -80,7 +81,10 @@ async def update(user_id: str, user_update: UserUpdate, db_instance=Depends(lamb
     
     # Convert the MongoDB document to the response model
     updated_user["_id"] = str(updated_user["_id"])  # Convert ObjectId to string
-    return UserResponse(**updated_user).model_dump(by_alias=True)
+    return UserUpdateResponse(
+        message="User updated successfully",
+        user=UserResponse(**updated_user).model_dump(by_alias=True)
+    )
 
 async def get(user_id: str, db_instance=Depends(lambda: db)):
     db = db_instance.db  # Fix: Access the database instance correctly
@@ -105,3 +109,36 @@ async def get_all(limit: int = 10, skip: int = 0, db_instance=Depends(lambda: db
     for user in users:
         user["_id"] = str(user["_id"])
     return [UserResponse(**user).model_dump(by_alias=True) for user in users]
+
+async def login(email: str, password: str, db_instance=Depends(lambda: db)):
+    db = db_instance.db  # Fix: Access the database instance correctly
+    
+    user = await db.users.find_one(
+    {"email": email},
+    {"_id": 1, "email": 1, "username": 1, "hashed_password": 1, "full_name": 1, "disabled": 1, "is_admin": 1, "last_login": 1, "created_at": 1, "updated_at": 1}
+    )
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+    
+    if not verify_password(password, user["hashed_password"]):
+        raise HTTPException(status_code=400, detail="Invalid username or password")
+    
+    token = create_access_token(data={"sub": user["username"], "user_id": str(user["_id"]), "is_admin": user.get("is_admin", False)})
+
+    user_response = UserResponse(
+        id=str(user["_id"]),
+        email=user["email"],
+        username=user["username"],
+        full_name=user.get("full_name"),
+        disabled=user.get("disabled", False),
+        is_admin=user.get("is_admin", False),
+        created_at=user.get("created_at"),
+        updated_at=user.get("updated_at"),
+        last_login=user.get("last_login")
+    )
+
+    return UserLoginResponse(
+        access_token=token,
+        token_type="Bearer",
+        user=user_response
+    )

@@ -93,3 +93,37 @@ class UserResponse(UserBase):
 # Class for Deleting User Response
 class DeleteUserResponse(BaseModel):
     message: str
+
+# Class for User Update Response
+class UserUpdateResponse(BaseModel):
+    message: str
+    user: UserResponse
+
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
+
+# Class for User Login
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
+
+# Class for User Login Response
+class UserLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+    # Updated Config for Pydantic v2
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
