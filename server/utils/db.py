@@ -83,3 +83,6 @@ class Database:
 
 # Create a singleton instance
 db = Database()
+
+def get_db():
+    return db.db
