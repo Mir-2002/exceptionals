@@ -106,10 +106,11 @@
 #         user["_id"] = str(user["_id"])
 #     return [UserResponse(**user).model_dump(by_alias=True) for user in users]
 
+from bson import ObjectId
 from fastapi import HTTPException
 import bcrypt
 from fastapi import Depends
-from model.User import UserCreateModel, UserInDBModel, UserUpdateModel, BaseResponseModel, DeleteUserResponseModel
+from model.User import UpdateUserResponseModel, UserCreateModel, UserInDBModel, UserModel, UserUpdateModel, BaseResponseModel, DeleteUserResponseModel
 from utils.db import get_db
 
 
@@ -127,7 +128,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 async def create(user: UserCreateModel, db = Depends(get_db)):
     existing_user = await db.users.find_one({"$or": [{"email": user.email}, {"username": user.username}]})
     if existing_user:
-        raise HTTPException(status_code=400, detail="Email or username already registered")
+        raise HTTPException(status_code=400, detail="Email or username already exists")
     
     hashed_password = hash_password(user.password)
     user_data = UserInDBModel(**user.model_dump(), hashed_password=hashed_password)
@@ -138,5 +139,57 @@ async def create(user: UserCreateModel, db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error creating user: {e}")
     
     return BaseResponseModel(**user_data.model_dump()).model_dump(by_alias=True)
+
+async def get(user_id: str, db = Depends(get_db)):
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user["_id"] = str(user["_id"])
+    return UserModel(**user).model_dump(by_alias=True)
+
+async def update(user_id: str, user_update: UserUpdateModel, db = Depends(get_db)):
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    update_data = user_update.model_dump(exclude_unset=True)
+    
+    try:
+        await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating user: {e}")
+    
+    updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not updated_user:
+        raise HTTPException(status_code=500, detail="Error retrieving updated user")
+
+    updated_user["_id"] = str(updated_user["_id"])
+    return UpdateUserResponseModel(
+    **updated_user,
+    updated_fields=update_data
+    ).model_dump(by_alias=True)
+
+
+async def remove(user_id: str, db = Depends(get_db)):
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    try:
+        await db.users.delete_one({"_id": ObjectId(user_id)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting user: {e}")
+    
+    return DeleteUserResponseModel(**user).model_dump(by_alias=True)
 
     
