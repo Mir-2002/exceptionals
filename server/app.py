@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from utils.db import db 
 from view.UserView import router as user_router
+from view.ProjectView import router as project_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +37,7 @@ async def root():
     return {"message": "Welcome to the Automatic Python Documentation Generator API!"}
 
 app.include_router(user_router, prefix="/api", tags=["users"])
+app.include_router(project_router, prefix="/api", tags=["projects"])
 
 if __name__ == "__main__":
     import uvicorn

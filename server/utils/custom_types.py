@@ -13,7 +13,7 @@ class PyObjectId(ObjectId):
     def validate(cls, v):
         if not ObjectId.is_valid(v):
             raise ValueError('Invalid ObjectId')
-        return ObjectId(v)
+        return str(ObjectId(v))
 
     @classmethod
     def __get_pydantic_json_schema__(cls, handler: GetJsonSchemaHandler):
