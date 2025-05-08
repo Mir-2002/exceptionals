@@ -6,17 +6,17 @@ const Home = () => {
   const navigate = useNavigate();
   return (
     <>
-      <div className="flex flex-row items-center justify-center min-h-[80vh] pb-0">
-        <section className="flex flex-col items-center justify-center w-1/2 p-20 font-funnel-sans space-y-10">
-          <h1 className="text-[6rem] font-extrabold leading-tight font-funnel-display text-sky-700">
-            Documentation, <br /> Made Easier.
+      <div className="flex flex-col md:flex-row items-center justify-center min-h-[80vh] pb-0">
+        <section className="flex flex-col items-center md:items-start justify-center w-full md:w-1/2 p-4 md:p-10 lg:p-20 font-funnel-sans space-y-6 md:space-y-10">
+          <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-[5rem] xl:text-[6rem] font-extrabold leading-tight font-funnel-display text-sky-700 text-center md:text-left">
+            Documentation, <br className="hidden md:block" /> Made Easier.
           </h1>
-          <p className="text-[1.5rem] text-center w-3/4">
+          <p className="text-lg md:text-xl lg:text-[1.5rem] text-center md:text-left w-full md:w-3/4">
             Seamlessly create documentation for your Python code using our
             AI-driven tool.
           </p>
           <button
-            className="text-[1.5rem] p-3 bg-yellow-400 text-sky-700 rounded-lg font-medium 
+            className="text-lg md:text-xl p-3 bg-yellow-400 text-sky-700 rounded-lg font-medium 
                        transform hover:scale-105 transition duration-300 ease-in-out hover:bg-yellow-500 
                        hover:shadow-lg"
             onClick={() => navigate("/register")}
@@ -24,8 +24,8 @@ const Home = () => {
             Get Started
           </button>
         </section>
-        <section className="flex items-center justify-center w-1/2 p-20">
-          <img src={PythonLogo} alt="Python Logo" className="max-w-lg" />
+        <section className="flex items-center justify-center w-full md:w-1/2 p-4 md:p-10 lg:p-20">
+          <img src={PythonLogo} alt="Python Logo" className="w-full max-w-[300px] md:max-w-lg" />
         </section>
       </div>
 

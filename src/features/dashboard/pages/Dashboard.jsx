@@ -1,5 +1,6 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
+import { useAuth } from '../../../shared/contexts/AuthContext';
 
 const Section = ({ title, description, onClick }) => {
   return (
@@ -21,26 +22,46 @@ const Section = ({ title, description, onClick }) => {
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
+  
+  // Get user from localStorage
+  const userString = localStorage.getItem('user');
+  const user = userString ? JSON.parse(userString) : null;
+  
   return (
-    <>
-      <main className="w-full h-full flex flex-row items-center justify-center p-20 space-x-20">
-        <Section
-          title="Upload Single File"
-          description="Start with a single Python file. Option to skip specific classes or functions."
-          onClick={() => navigate("/file-upload")}
-        />
-        <Section
-          title="Upload Folder"
-          description="Upload your project folder. Option to skip specific directories and files."
-          onClick={() => navigate("/folder-upload")}
-        />
-        <Section
-          title="Using a Repository"
-          description="Paste a link to your GitHub repository. Option to choose a specific branch."
-          onClick={() => navigate("/repo-upload")}
-        />
-      </main>
-    </>
+    <div className="p-8 max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold mb-6 text-sky-800">Dashboard</h1>
+      
+      {user ? (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+          <h2 className="text-xl font-semibold mb-4">Welcome, {user.username}!</h2>
+          <p>You are logged in as: {user.email}</p>
+          
+          <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="border border-gray-200 rounded-lg p-4">
+              <h3 className="text-lg font-medium text-sky-700">Recent Projects</h3>
+              <p className="text-gray-600 mt-2">You have no recent projects.</p>
+            </div>
+            
+            <div className="border border-gray-200 rounded-lg p-4">
+              <h3 className="text-lg font-medium text-sky-700">Upload Code</h3>
+              <p className="text-gray-600 mt-2">Upload your code for documentation.</p>
+              <Link 
+                to="/file-upload" 
+                className="mt-4 inline-block px-4 py-2 bg-yellow-400 text-sky-700 rounded hover:bg-yellow-500"
+              >
+                Go to Upload
+              </Link>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          <p>You need to be logged in to view this page.</p>
+          <Link to="/login" className="font-medium underline">Sign in here</Link>
+        </div>
+      )}
+    </div>
   );
 };
 

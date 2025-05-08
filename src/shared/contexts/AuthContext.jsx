@@ -1,34 +1,64 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useState, useContext, useEffect } from 'react';
 
-const AuthContext = createContext({});
+// Create Auth Context
+const AuthContext = createContext();
 
-export function useAuth() {
-  return useContext(AuthContext);
-}
-
-export function AuthProvider({ children }) {
+// Provider component
+export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
-  
-  // Mock login function that just sets a user object locally
-  const mockLogin = (email) => {
-    setCurrentUser({
+
+  // Check for saved user on initial load
+  useEffect(() => {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      setCurrentUser(JSON.parse(savedUser));
+    }
+  }, []);
+
+  // Login function
+  const login = (email) => {
+    console.log("AuthContext login called with:", email);
+    const user = {
       email,
       username: email.split('@')[0],
-    });
-  };
-  
-  // Mock logout function
-  const mockLogout = () => {
-    setCurrentUser(null);
+    };
+    localStorage.setItem('user', JSON.stringify(user));
+    setCurrentUser(user);
+    return true;
   };
 
-  return (
-    <AuthContext.Provider value={{ 
-      currentUser, 
-      login: mockLogin,
-      logout: mockLogout 
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
+  // Logout function
+  const logout = () => {
+    localStorage.removeItem('user');
+    setCurrentUser(null);
+    return true;
+  };
+
+  const value = {
+    currentUser,
+    login,
+    logout,
+  };
+
+  console.log("Auth context value:", value); // Debug log
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+// Custom hook to use auth context
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  
+  // Add debugging
+  if (!context) {
+    console.error("useAuth must be used within an AuthProvider");
+    return { 
+      currentUser: null, 
+      login: null,
+      logout: null
+    };
+  }
+  
+  console.log("Auth context being used:", context);
+  return context;
+};
