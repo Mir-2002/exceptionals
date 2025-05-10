@@ -10,10 +10,12 @@ class PyObjectId(ObjectId):
         yield cls.validate
 
     @classmethod
-    def validate(cls, v):
+    def validate(cls, v, handler):
+        if isinstance(v, ObjectId):
+            return str(v)
         if not ObjectId.is_valid(v):
             raise ValueError('Invalid ObjectId')
-        return str(ObjectId(v))
+        return str(v)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, handler: GetJsonSchemaHandler):
