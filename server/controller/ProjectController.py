@@ -15,6 +15,10 @@ async def create(project: ProjectModel, db=Depends(get_db)):
     Returns:
         ProjectResponseModel: The created project data with additional information.
     """
+    existing_project = await db.projects.find_one({"name": project.name})
+    if existing_project:
+        raise HTTPException(status_code=400, detail="Project with this name already exists")
+    
     try:
         # Insert the project into the database
         result = await db.projects.insert_one(project.model_dump(by_alias=True))
