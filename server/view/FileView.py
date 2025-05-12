@@ -1,9 +1,14 @@
-import os
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Query
-from controller.FileController import upload_file, get_file_structure, get_file_content
+from controller.FileController import (
+    upload_file, 
+    get_file_structure, 
+    get_file_content, 
+    get_project_files as get_files_controller,
+    get_file as get_file_controller,
+    delete_file as delete_file_controller
+)
 from model.File import FileResponseModel, FileStructure
 from utils.db import get_db
-from bson import ObjectId
 from typing import List
 
 router = APIRouter()
@@ -25,31 +30,12 @@ async def get_project_files(
     db=Depends(get_db)
 ):
     """Get all files in a project."""
-    if not ObjectId.is_valid(project_id):
-        raise HTTPException(status_code=400, detail="Invalid project ID")
-        
-    # Check if project exists
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Get files for this project
-    cursor = db.files.find({"project_id": ObjectId(project_id)}).skip(skip).limit(limit)
-    files = await cursor.to_list(length=limit)
-    
-    return files
+    return await get_files_controller(project_id, skip, limit, db)
 
 @router.get("/files/{file_id}", response_model=FileResponseModel)
 async def get_file(file_id: str, db=Depends(get_db)):
     """Get a file by ID."""
-    if not ObjectId.is_valid(file_id):
-        raise HTTPException(status_code=400, detail="Invalid file ID")
-    
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    return file
+    return await get_file_controller(file_id, db)
 
 @router.get("/files/{file_id}/structure", response_model=FileStructure)
 async def get_structure(file_id: str, db=Depends(get_db)):
@@ -64,24 +50,4 @@ async def get_content(file_id: str, db=Depends(get_db)):
 @router.delete("/files/{file_id}")
 async def delete_file(file_id: str, db=Depends(get_db)):
     """Delete a file."""
-    if not ObjectId.is_valid(file_id):
-        raise HTTPException(status_code=400, detail="Invalid file ID")
-    
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    # Delete the file from disk
-    if os.path.exists(file["file_path"]):
-        try:
-            os.remove(file["file_path"])
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error deleting file from disk: {str(e)}")
-    
-    # Delete from database
-    result = await db.files.delete_one({"_id": ObjectId(file_id)})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=500, detail="Failed to delete file from database")
-        
-    return {"message": "File deleted successfully", "file_id": file_id}
+    return await delete_file_controller(file_id, db)

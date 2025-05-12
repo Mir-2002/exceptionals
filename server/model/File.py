@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import os
 import re
 from typing import Any, ClassVar, Dict, Optional, List
+from bson import ObjectId
 from pydantic import BaseModel, Field, field_validator
 from utils.custom_types import PyObjectId
 
@@ -59,11 +60,12 @@ class FileModel(BaseModel):
         
         return value
     
-    @field_validator("file_name", mode="after")
+    @field_validator("content_type")
     @classmethod
-    def validate_file_type(cls, value: str) -> str:
-        if not value.endswith('.py'):
-            raise ValueError("Only Python files are allowed")
+    def validate_content_type(cls, value: str) -> str:
+        valid_types = ["text/x-python", "text/plain", "application/x-python-code", "application/octet-stream"]
+        if value not in valid_types and not value.startswith("text/"):
+            raise ValueError(f"Unsupported content type: {value}. Expected a Python file.")
         return value
     
     @field_validator("size")
@@ -75,14 +77,6 @@ class FileModel(BaseModel):
             raise ValueError(f"File size exceeds maximum allowed size of {cls.MAX_FILE_SIZE/(1024*1024)}MB.")
         return value
     
-    @field_validator("content_type")
-    @classmethod
-    def validate_content_type(cls, value: str) -> str:
-        valid_types = ["text/x-python", "text/plain", "application/x-python-code"]
-        if value not in valid_types and not value.startswith("text/"):
-            raise ValueError(f"Unsupported content type: {value}. Expected a Python file.")
-        return value
-    
 class FileResponseModel(BaseModel):
     id: str = Field(..., alias="_id")
     project_id: str
@@ -91,6 +85,8 @@ class FileResponseModel(BaseModel):
     relative_path: Optional[str] = None
     created_at: datetime
     processed: bool = False
+    file_path: Optional[str] = None
+    content_type: Optional[str] = None
     structure: Optional[Dict[str, Any]] = None
 
     @property
@@ -102,4 +98,8 @@ class FileResponseModel(BaseModel):
                 return f"{size:.2f} {unit}"
             size /= 1024
 
-
+    model_config = {
+        "json_encoders": {
+            ObjectId: str 
+        }
+    }
