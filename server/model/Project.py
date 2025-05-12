@@ -41,6 +41,10 @@ class ProjectInDBModel(ProjectModel):
 class ProjectResponseModel(ProjectModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     message: str = "Operation successful"
+    file_count: Optional[int] = 0
+    processed_files: Optional[int] = 0
+    processing_status: Optional[str] = "Not Started"  # "Not Started", "In Progress", "Completed", "Failed"
+
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -73,6 +77,3 @@ class ProjectDeleteResponseModel(BaseModel):
         populate_by_name=True,
         json_encoders={ObjectId: str}
     )
-
-
-

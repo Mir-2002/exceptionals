@@ -1,4 +1,5 @@
 
+import os
 from fastapi import Depends, HTTPException
 from model.Project import ProjectDeleteResponseModel, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel
 from utils.db import get_db
@@ -23,6 +24,9 @@ async def create(project: ProjectModel, db=Depends(get_db)):
             detail="Project with this name already exists"
         )
     
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection error")
+    
     try:
         # Insert the project into the database
         project_data = project.model_dump(by_alias=True)
@@ -45,33 +49,28 @@ async def create(project: ProjectModel, db=Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error creating project: {e}")
     
 async def get(project_id: str, db=Depends(get_db)):
-    """
-    Retrieve a project by its ID.
-    
-    Args:
-        project_id (str): The ID of the project to retrieve.
-        db: The database instance.
-
-    Returns:
-        ProjectResponseModel: The retrieved project data with additional information.
-    """
+    """Get a project by ID."""
+    # Validate MongoDB ObjectId format
     if not ObjectId.is_valid(project_id):
-        raise HTTPException(status_code=400, detail="Invalid project ID format")
-    
+            raise HTTPException(status_code=404, detail="Invalid project ID format")
+        
+        # Handle database connection issues
+    if db is None:
+            raise HTTPException(status_code=500, detail="Database connection error")
     try:
-        # Fetch the project from the database
+        # Find the project
         project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        
+        # Return 404 if project not found
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-
-        # Create the response model directly from the document
-        return ProjectResponseModel(
-            **project,
-            message="Project retrieved successfully"
-        )
-
+            
+        return ProjectResponseModel(**project)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving project: {e}")
+        # Log the exception but don't expose details to client
+        print(f"Error fetching project: {str(e)}")
+        # Return generic 404 for any errors related to finding the object
+        raise HTTPException(status_code=404, detail="Project not found") 
     
 async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends(get_db)):
     """
@@ -87,6 +86,9 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
+    
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection error")
     
     try:
         # Fetch the existing project
@@ -128,10 +130,18 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
                 detail="Project update failed"
             )
         
+        # Get file statistics
+        file_count = await db.files.count_documents({"project_id": ObjectId(project_id)})
+        processed_files = await db.files.count_documents({
+        "project_id": ObjectId(project_id),
+        "processed": True
+        })
 
         # Return the response model
         return ProjectUpdateResponseModel(
             **updated_project,
+            file_count=file_count,
+            processed_files=processed_files,
             updated_fields=update_data,
             message="Project updated successfully"
         )
@@ -155,25 +165,44 @@ async def remove(project_id: str, db=Depends(get_db)):
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
     
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection error")
+    
     try:
         # Fetch the existing project
         existing_project = await db.projects.find_one({"_id": ObjectId(project_id)})
         if not existing_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Delete the project from the database
-        result = await db.projects.delete_one({"_id": ObjectId(project_id)})
+        # Get associated files for cleanup
+        files = await db.files.find({"project_id": ObjectId(project_id)}).to_list(length=None)
         
-        if result.deleted_count == 0:
+        # Delete the project from the database
+        project_result = await db.projects.delete_one({"_id": ObjectId(project_id)})
+        if project_result.deleted_count == 0:
             raise HTTPException(status_code=500, detail="Project deletion failed")
+        
+        # Delete all associated files from disk and database
+        deleted_file_count = 0
+        for file in files:
+            # Delete from disk if exists
+            if "file_path" in file and os.path.exists(file["file_path"]):
+                try:
+                    os.remove(file["file_path"])
+                except Exception as e:
+                    print(f"Warning: Could not delete file {file['file_path']}: {e}")
+            
+            # Delete from database
+            file_result = await db.files.delete_one({"_id": file["_id"]})
+            if file_result.deleted_count > 0:
+                deleted_file_count += 1
         
         # Return the response model
         return ProjectDeleteResponseModel(
             **existing_project,
-            message="Project deleted successfully"
+            message=f"Project deleted successfully with {deleted_file_count} associated files"
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting project: {e}")
-    
     
