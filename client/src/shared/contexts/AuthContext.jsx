@@ -1,45 +1,47 @@
-import axios from "axios";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useState } from "react";
 
 const AuthContext = createContext({});
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+export function useAuth() {
+  return useContext(AuthContext);
+}
+
+export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const auth = getAuth();
+  
+  const setAuthUser = (user, token) => {
+    localStorage.setItem('user', JSON.stringify(user));
+    localStorage.setItem('token', token);
+    setCurrentUser(user);
+  };
 
-  const userAPI = `${import.meta.env.VITE_API_ENDPOINT}/api/users`;
+  const clearAuth = () => {
+    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    setCurrentUser(null);
+  };
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setUser(user);
-        console.log(user);
-        try {
-          const response = await axios.get(`${userAPI}/${user.uid}`);
-          setCurrentUser(response.data);
-          console.log(response.data);
-        } catch (error) {
-          console.error("Error fetching user data:", error);
-        }
-      } else {
-        console.log("No user found");
-        setUser(null);
-        setCurrentUser(null);
-      }
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, [auth]);
+  // Mock login function that just sets a user object locally
+  const mockLogin = (email) => {
+    const user = {
+      email,
+      username: email.split('@')[0],
+    };
+    setAuthUser(user, 'mockToken');
+  };
+  
+  // Mock logout function
+  const mockLogout = () => {
+    clearAuth();
+  };
+
   return (
-    <AuthContext.Provider value={{ user, currentUser, loading }}>
-      {!loading && children}
+    <AuthContext.Provider value={{ 
+      currentUser, 
+      login: mockLogin,
+      logout: mockLogout 
+    }}>
+      {children}
     </AuthContext.Provider>
   );
-};
-
-export const useAuth = () => {
-  return useContext(AuthContext);
-};
+}
