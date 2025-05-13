@@ -1,7 +1,10 @@
 import ast
 import os
+import inspect
+import textwrap
 from typing import Dict, List, Any, Optional
 import traceback
+import astor
 
 
 class CodeParserService:
@@ -29,6 +32,7 @@ class CodeParserService:
         try:
             with open(file_path, 'r', encoding='utf-8') as file:
                 code = file.read()
+                self.file_lines = code.splitlines()
                 
             # Check if file is empty
             if not code.strip():
@@ -97,7 +101,8 @@ class CodeParserService:
             "end_line": self._get_end_line(node),
             "methods": [],
             "docstring": ast.get_docstring(node) or "",
-            "bases": [self._get_name(base) for base in node.bases]
+            "bases": [self._get_name(base) for base in node.bases],
+            "code": self._extract_code(node)  # Extract the class code
         }
         
         # Extract methods and class variables
@@ -116,8 +121,27 @@ class CodeParserService:
             "end_line": self._get_end_line(node),
             "args": self._extract_args(node.args),
             "docstring": ast.get_docstring(node) or "",
-            "decorators": [self._get_name(d) for d in node.decorator_list]
+            "decorators": [self._get_name(d) for d in node.decorator_list],
+            "code": self._extract_code(node)  # Extract the function code
         }
+    
+    def _extract_code(self, node: ast.AST) -> str:
+        """Extract the source code from a node."""
+        try:
+            # Method 1: Use astor to convert AST back to source
+            return astor.to_source(node)
+        except Exception:
+            try:
+                # Method 2: Extract from original file lines
+                start_line = node.lineno - 1  # Convert to 0-indexed
+                end_line = self._get_end_line(node)
+                
+                if hasattr(self, 'file_lines') and len(self.file_lines) >= end_line:
+                    code_lines = self.file_lines[start_line:end_line]
+                    return '\n'.join(code_lines)
+                return "# Code extraction failed"
+            except Exception as e:
+                return f"# Code extraction error: {str(e)}"
     
     def _extract_args(self, args: ast.arguments) -> List[str]:
         """Extract function arguments."""
