@@ -1,8 +1,7 @@
-from ast import List
 from datetime import datetime, timezone
 import os
 import re
-from typing import Any, ClassVar, Dict, Optional, List
+from typing import Any, ClassVar, Dict, Optional, List, Union
 from bson import ObjectId
 from pydantic import BaseModel, Field, field_validator
 from utils.custom_types import PyObjectId
@@ -14,6 +13,7 @@ class FunctionInfo(BaseModel):
     args: List[str]
     docstring: str
     decorators: List[str]
+    code: Optional[str] = None
 
 class ClassInfo(BaseModel):
     name: str
@@ -22,6 +22,20 @@ class ClassInfo(BaseModel):
     methods: List[FunctionInfo]
     docstring: str
     bases: List[str]
+    code : Optional[str] = None
+
+class FileUploadInfo(BaseModel):
+    id: str
+    file_name: str
+    relative_path: str
+    size: int
+    processed: bool
+
+class ZipUploadResponseModel(BaseModel):
+    message: str
+    processed_count: int
+    total_files: int
+    files: List[FileUploadInfo]
 
 class FileStructure(BaseModel):
     file_name: str
@@ -31,7 +45,7 @@ class FileStructure(BaseModel):
 
 class FileModel(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    project_id: PyObjectId
+    project_id: str = Field(..., alias="project_id")
     file_name: str
     file_path: str # Path on server
     content_type: str
@@ -79,7 +93,7 @@ class FileModel(BaseModel):
     
 class FileResponseModel(BaseModel):
     id: str = Field(..., alias="_id")
-    project_id: str
+    project_id: str = Field(..., alias="project_id")
     file_name: str
     size: int
     relative_path: Optional[str] = None
@@ -100,6 +114,27 @@ class FileResponseModel(BaseModel):
 
     model_config = {
         "json_encoders": {
-            ObjectId: str 
+            ObjectId: str,
+            PyObjectId: str
         }
     }
+
+class FileNode(BaseModel):
+    name: str
+    type: str = "file"
+    size: int
+    processed: Optional[bool] = None
+    id: Optional[str] = None
+
+class FolderNode(BaseModel):
+    name: str
+    type: str = "folder"
+    children: List[Union["FolderNode", FileNode]] = []
+
+# This is needed for the recursive type definition
+FolderNode.model_rebuild()
+
+class ProjectStructureResponseModel(BaseModel):
+    project_id: str
+    project_name: str
+    root: FolderNode

@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
 from fastapi import Depends, File, HTTPException, UploadFile
-from model.File import FileModel, FileResponseModel, FileStructure
+from model.File import FileModel, FileNode, FileResponseModel, FileStructure, FileUploadInfo, FolderNode, ProjectStructureResponseModel, ZipUploadResponseModel
 from utils.db import get_db
 from bson import ObjectId
 from datetime import datetime
 from utils.parser import CodeParserService
+from utils.zip_parser import extract_and_process_zip
 from typing import List
 
 # Configure file storage
@@ -39,7 +41,7 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
     
     # Check for duplicate files
     existing_file = await db.files.find_one({
-        "project_id": ObjectId(project_id),
+        "project_id": project_id,
         "file_name": safe_filename
     })
     
@@ -56,20 +58,32 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
         with open(temp_file_path, "wb") as f:
             f.write(content)
         
+        try:
         # Analyze file structure using the parser
-        structure = code_parser.parse_file(temp_file_path)
+            structure = code_parser.parse_file(temp_file_path)
+            processed = True
+        except Exception as e:
+            print(f"Error parsing file: {str(e)}")
+            # Create minimal structure on parsing failure
+            structure = {
+                "file_name": safe_filename,
+                "error": f"Error parsing file: {str(e)}",
+                "classes": [],
+                "functions": []
+            }
+            processed = False
         
         # Rename to final filename
         os.rename(temp_file_path, file_path)
         
         # Create file document
         file_doc = FileModel(
-        project_id=ObjectId(project_id),
+        project_id=project_id,
         file_name=safe_filename,
         file_path=file_path,
         content_type=file.content_type,
         size=len(content),
-        processed=True,
+        processed=processed,
         structure=structure if isinstance(structure, dict) else 
                 (structure.model_dump() if hasattr(structure, "model_dump") else 
                 structure.dict() if hasattr(structure, "dict") else None)
@@ -94,6 +108,89 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+    
+async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(get_db)):
+    """
+    Upload and extract a ZIP file containing a project structure.
+    
+    Args:
+        project_id: The project to add files to
+        zip_file: The uploaded ZIP file
+        db: Database connection
+        
+    Returns:
+        Dictionary containing upload results
+    """
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid project ID")
+        
+    # Check if project exists
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Validate file
+    if not zip_file.filename or not zip_file.filename.lower().endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Only ZIP files are supported")
+    
+    # Set up project directory
+    project_dir = os.path.join(UPLOAD_DIR, project_id)
+    
+    try:
+        # Process the ZIP file
+        file_metadata_list = await extract_and_process_zip(zip_file, project_id, project_dir)
+        
+        # Insert files into database
+        inserted_files = []
+        processed_count = 0
+        
+        for metadata in file_metadata_list:
+            # Create file document
+            file_doc = FileModel(**metadata)
+            
+            # Save to database
+            result = await db.files.insert_one(file_doc.model_dump(by_alias=True))
+            
+            # Track processed files
+            if metadata["processed"]:
+                processed_count += 1
+                
+            # Get the created file
+            created_file = await db.files.find_one({"_id": result.inserted_id})
+            if created_file:
+                # Convert ObjectId fields to strings
+                created_file["_id"] = str(created_file["_id"])
+                created_file["project_id"] = str(created_file["project_id"])
+                
+                inserted_files.append(FileResponseModel(**created_file))
+        
+        # Update project stats
+        await db.projects.update_one(
+            {"_id": ObjectId(project_id)},
+            {"$set": {
+                "file_count": len(inserted_files),
+                "processed_files": processed_count,
+                "updated_at": datetime.now()
+            }}
+        )
+        
+        return ZipUploadResponseModel(
+            message=f"Successfully uploaded and processed {len(inserted_files)} files ({processed_count} Python files processed)",
+            processed_count=processed_count,
+            total_files=len(inserted_files),
+            files=[
+                FileUploadInfo(
+                    id=str(file.id),
+                    file_name=file.file_name,
+                    relative_path=getattr(file, 'relative_path', file.file_name),
+                    size=file.size,
+                    processed=file.processed
+                ) for file in inserted_files
+            ]
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing ZIP file: {str(e)}")
 
 async def get_project_files(
     project_id: str, 
@@ -106,16 +203,14 @@ async def get_project_files(
         raise HTTPException(status_code=400, detail="Invalid project ID")
     
     try:
-        # Convert to ObjectId once
-        project_oid = ObjectId(project_id)
         
         # Check if project exists
-        project = await db.projects.find_one({"_id": project_oid})
+        project = await db.projects.find_one({"_id": ObjectId(project_id)})
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
         # Query files
-        files = await db.files.find({"project_id": project_oid}) \
+        files = await db.files.find({"project_id": project_id}) \
                              .skip(skip) \
                              .limit(limit) \
                              .to_list(length=limit)
@@ -155,7 +250,7 @@ async def get_file(file_id: str, db=Depends(get_db)):
     
     return FileResponseModel(**file)
 
-async def get_file_structure(file_id: str, db=Depends(get_db)):
+async def get_file_structure(file_id: str, include_code: bool = False, db=Depends(get_db)):
     """Get the structure of a file."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
@@ -167,7 +262,21 @@ async def get_file_structure(file_id: str, db=Depends(get_db)):
     # Return structure if available, or parse file if not processed yet
     if file.get("processed") and file.get("structure"):
         try:
-            return FileStructure.model_validate(file["structure"])
+            structure = FileStructure.model_validate(file["structure"])
+            
+            # Remove code fields if not requested
+            if not include_code:
+                for cls in getattr(structure, "classes", []):
+                    if hasattr(cls, "code"):
+                        cls.code = None
+                    for method in getattr(cls, "methods", []):
+                        if hasattr(method, "code"):
+                            method.code = None
+                for func in getattr(structure, "functions", []):
+                    if hasattr(func, "code"):
+                        func.code = None
+                    
+            return structure
         except Exception as e:
             print(f"Error validating file structure: {str(e)}")
             raise HTTPException(status_code=500, detail="Invalid file structure format")
@@ -206,13 +315,104 @@ async def get_file_content(file_id: str, db=Depends(get_db)):
     # Read file content
     try:
         if os.path.exists(file["file_path"]):
-            with open(file["file_path"], "r", encoding="utf-8") as f:
-                content = f.read()
-            return {"content": content, "file_name": file["file_name"]}
+            try:
+                # Try UTF-8 first
+                with open(file["file_path"], "r", encoding="utf-8") as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                # Fall back to latin-1 if UTF-8 fails
+                with open(file["file_path"], "r", encoding="latin-1") as f:
+                    content = f.read()
+                
+            return {"content": content, "file_name": file["file_name"], "size": file["size"], "created_at": file["created_at"]}
         else:
             raise HTTPException(status_code=404, detail="File content not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file content: {str(e)}")
+    
+async def get_project_structure(project_id: str, db=Depends(get_db)) -> ProjectStructureResponseModel:
+    """
+    Get the folder structure of a project.
+    
+    This builds a tree structure representing folders and files in the project.
+    
+    Args:
+        project_id: The ID of the project
+        db: Database connection
+        
+    Returns:
+        Tree structure of the project's folders and files
+    """
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid project ID")
+    
+    # Get project info
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get all files for this project
+    files = await db.files.find({"project_id": project_id}).to_list(length=None)
+    
+    # Create structure
+    root_folder = FolderNode(name="root")
+    
+    for file in files:
+        # Get relative path or use filename
+        path = file.get("relative_path", file["file_name"])
+        if not path:
+            path = file["file_name"]
+            
+        # Split path into parts
+        parts = Path(path).parts
+        
+        # Navigate/build folder structure
+        current_folder = root_folder
+        
+        # Handle all directories in the path
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                # This is the file name
+                file_node = FileNode(
+                    name=part,
+                    size=file["size"],
+                    processed=file.get("processed", False),
+                    id=str(file["_id"])
+                )
+                current_folder.children.append(file_node)
+            else:
+                # This is a directory
+                # Check if it already exists
+                found = False
+                for child in current_folder.children:
+                    if child.name == part and child.type == "folder":
+                        current_folder = child
+                        found = True
+                        break
+                
+                if not found:
+                    # Create new folder
+                    new_folder = FolderNode(name=part)
+                    current_folder.children.append(new_folder)
+                    current_folder = new_folder
+    
+    # Sort folders and files alphabetically
+    def sort_nodes(node: FolderNode):
+        # Sort children recursively
+        for child in node.children:
+            if child.type == "folder":
+                sort_nodes(child)
+        
+        # Sort current level - folders first, then files
+        node.children.sort(key=lambda x: (x.type != "folder", x.name.lower()))
+    
+    sort_nodes(root_folder)
+    
+    return ProjectStructureResponseModel(
+        project_id=project_id,
+        project_name=project["name"],
+        root=root_folder
+    )
 
 async def delete_file(file_id: str, db=Depends(get_db)):
     """Delete a file."""

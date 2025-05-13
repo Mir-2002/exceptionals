@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Query
 from controller.FileController import (
-    upload_file, 
+    upload_file,
+    upload_project_zip,
     get_file_structure, 
     get_file_content, 
     get_project_files as get_files_controller,
@@ -38,9 +39,12 @@ async def get_file(file_id: str, db=Depends(get_db)):
     return await get_file_controller(file_id, db)
 
 @router.get("/files/{file_id}/structure", response_model=FileStructure)
-async def get_structure(file_id: str, db=Depends(get_db)):
+async def get_structure(
+    file_id: str,
+    include_code : bool = Query(False, description="Include code in the structure"),
+    db=Depends(get_db)):
     """Get the structure of a file."""
-    return await get_file_structure(file_id, db)
+    return await get_file_structure(file_id, include_code, db)
 
 @router.get("/files/{file_id}/content")
 async def get_content(file_id: str, db=Depends(get_db)):
@@ -51,3 +55,16 @@ async def get_content(file_id: str, db=Depends(get_db)):
 async def delete_file(file_id: str, db=Depends(get_db)):
     """Delete a file."""
     return await delete_file_controller(file_id, db)
+
+@router.post("/projects/{project_id}/upload-zip")
+async def upload_project_zip_file(
+    project_id: str,
+    zip_file: UploadFile = File(...),
+    db=Depends(get_db)
+):
+    """
+    Upload a ZIP file containing a project structure.
+    
+    This allows users to upload entire projects with their directory structure intact.
+    """
+    return await upload_project_zip(project_id, zip_file, db)

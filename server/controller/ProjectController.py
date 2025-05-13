@@ -39,6 +39,8 @@ async def create(project: ProjectModel, db=Depends(get_db)):
                 status_code=500,
                 detail="Project created but could not be retrieved"
             )
+        
+        created_project["_id"] = str(created_project["_id"])
 
         # Return the response model
         return ProjectResponseModel(
