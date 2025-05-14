@@ -1,13 +1,22 @@
+"""
+
+TO DO:
+- Add User ID
+
+"""
+
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from utils.custom_types import PyObjectId
 
 
 class ProjectModel(BaseModel):
     name: str
+    excluded_directories: List[str] = []
+    excluded_files: List[str] = []
+
     description: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

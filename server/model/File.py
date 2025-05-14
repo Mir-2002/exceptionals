@@ -14,6 +14,9 @@ class FunctionInfo(BaseModel):
     docstring: str
     decorators: List[str]
     code: Optional[str] = None
+    excluded: bool = False
+    default_exclusion: bool = False
+    inherited_exclusion: bool = False
 
 class ClassInfo(BaseModel):
     name: str
@@ -23,6 +26,9 @@ class ClassInfo(BaseModel):
     docstring: str
     bases: List[str]
     code : Optional[str] = None
+    excluded: bool = False
+    default_exclusion: bool = False
+    inherited_exclusion: bool = False
 
 class FileUploadInfo(BaseModel):
     id: str
@@ -54,6 +60,8 @@ class FileModel(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     processed: bool = False
     structure: Optional[Dict[str, Any]] = None
+    excluded_classes: List[str] = []
+    excluded_functions: List[str] = []
 
     MAX_FILE_SIZE : ClassVar[int] = 100 * 1024 * 1024  # 100 MB
 
@@ -85,8 +93,8 @@ class FileModel(BaseModel):
     @field_validator("size")
     @classmethod
     def validate_file_size(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("File size must be greater than 0.")
+        if value < 0:
+            raise ValueError("File size must be greater than or equal to 0.")
         if value > cls.MAX_FILE_SIZE:
             raise ValueError(f"File size exceeds maximum allowed size of {cls.MAX_FILE_SIZE/(1024*1024)}MB.")
         return value
@@ -125,11 +133,17 @@ class FileNode(BaseModel):
     size: int
     processed: Optional[bool] = None
     id: Optional[str] = None
+    excluded: bool = False
+    inherited_exclusion: bool = False
+    default_exclusion: bool = False
 
 class FolderNode(BaseModel):
     name: str
     type: str = "folder"
     children: List[Union["FolderNode", FileNode]] = []
+    excluded: bool = False
+    inherited_exclusion: bool = False
+    default_exclusion: bool = False
 
 # This is needed for the recursive type definition
 FolderNode.model_rebuild()
@@ -138,3 +152,26 @@ class ProjectStructureResponseModel(BaseModel):
     project_id: str
     project_name: str
     root: FolderNode
+
+class ExclusionItem(BaseModel):
+    """Model representing an item to be excluded from documentation."""
+    type: str  # "function", "class", "directory"
+    name: str
+    path: Optional[str] = None  # For directories - relative path
+
+class FileExclusions(BaseModel):
+    """Model to track exclusions for a specific file."""
+    file_id: str
+    excluded_classes: List[str] = []
+    excluded_functions: List[str] = []
+
+class ProjectExclusions(BaseModel):
+    """Model to track exclusions for a project."""
+    project_id: str
+    excluded_directories: List[str] = [] 
+    excluded_files: List[str] = []
+
+class ExclusionResponse(BaseModel):
+    """Response model for exclusion operations."""
+    success: bool
+    message: str
