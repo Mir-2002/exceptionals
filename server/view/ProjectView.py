@@ -1,11 +1,10 @@
 import os
 from bson import ObjectId
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 
-from controller.ProjectController import create, get, remove, update
+from controller.ProjectController import create, get, remove, update, get_project_structure, set_project_exclusions, get_project_exclusions, upload_project_zip
 from model.Project import ProjectDeleteResponseModel, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel
-from controller.FileController import get_project_structure
-from model.File import ProjectStructureResponseModel
+from model.File import ExclusionResponse, ProjectExclusions, ProjectStructureResponseModel, ZipUploadResponseModel
 from utils.db import get_db
 
 
@@ -38,37 +37,33 @@ async def get_structure_for_project(project_id: str, use_default_exclusions: boo
     return await get_project_structure(project_id, use_default_exclusions,
     db)
 
-@router.get("/debug-path-matching/{project_id}")
-async def debug_path_matching(project_id: str, db=Depends(get_db)):
-    """Debug endpoint for path matching issues"""
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
-    excluded_dirs = project.get("excluded_directories", [])
-    excluded_files = project.get("excluded_files", [])
+@router.post("/projects/{project_id}/exclusions", response_model=ExclusionResponse)
+async def update_project_exclusions(
+    project_id: str,
+    exclusions: ProjectExclusions,
+    db=Depends(get_db)
+):
+    """
+    Set which directories and files to exclude from project documentation.
+    """
+    return await set_project_exclusions(project_id, exclusions, db)
+
+@router.post("/projects/{project_id}/upload-zip", response_model=ZipUploadResponseModel)
+async def upload_project_zip_file(
+    project_id: str,
+    zip_file: UploadFile = File(...),
+    db=Depends(get_db)
+):
+    """
+    Upload a ZIP file containing a project structure.
     
-    test_paths = {
-        "src/helpers": {
-            "normalized": os.path.normpath("src/helpers"),
-            "with_slash": "src/helpers/",
-            "backslash": "src\\helpers",
-            "normalized_backslash": os.path.normpath("src\\helpers"),
-            "match_direct": "src/helpers" in excluded_dirs,
-            "match_with_slash": "src/helpers/" in excluded_dirs,
-            "match_backslash_replaced": "src\\helpers".replace("\\", "/") in excluded_dirs
-        },
-        "main.py": {
-            "normalized": os.path.normpath("main.py"),
-            "match_direct": "main.py" in excluded_files,
-            "match_normalized": os.path.normpath("main.py") in excluded_files,
-            "match_backslash_replaced": "main.py".replace("\\", "/") in excluded_files
-        }
-    }
-    
-    return {
-        "excluded_dirs": excluded_dirs,
-        "excluded_files": excluded_files,
-        "test_paths": test_paths,
-        "os_sep": os.path.sep
-    }
+    This allows users to upload entire projects with their directory structure intact.
+    """
+    return await upload_project_zip(project_id, zip_file, db)
 
-
-
+@router.get("/projects/{project_id}/exclusions", response_model=ProjectExclusions)
+async def retrieve_project_exclusions(project_id: str, db=Depends(get_db)):
+    """
+    Get the current exclusions for a project.
+    """
+    return await get_project_exclusions(project_id, db)
