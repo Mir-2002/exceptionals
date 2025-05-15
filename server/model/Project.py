@@ -86,3 +86,14 @@ class ProjectDeleteResponseModel(BaseModel):
         populate_by_name=True,
         json_encoders={ObjectId: str}
     )
+
+class ProjectBasicResponse(BaseModel):
+    project_id: str
+    success: bool
+    message: str
+    name: str
+
+class ProjectExclusionResponse(BaseModel):
+    success: bool
+    message: str
+    project_id: str

@@ -175,3 +175,22 @@ class ExclusionResponse(BaseModel):
     """Response model for exclusion operations."""
     success: bool
     message: str
+
+class FileBasicResponse(BaseModel):
+    success: bool
+    message: str
+    file_id: str
+
+class FileContentResponse(BaseModel):
+    """Response model for file content retrieval."""
+    file_id: str
+    file_name: str
+    content: str
+    size: int
+    content_type: str
+
+class FileStructureResponse(BaseModel):
+    """Response model for file structure retrieval."""
+    file_id: str
+    file_name: str
+    structure: Dict[str, Any]
