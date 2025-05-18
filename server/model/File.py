@@ -148,11 +148,6 @@ class FolderNode(BaseModel):
 # This is needed for the recursive type definition
 FolderNode.model_rebuild()
 
-class ProjectStructureResponseModel(BaseModel):
-    project_id: str
-    project_name: str
-    root: FolderNode
-
 class ExclusionItem(BaseModel):
     """Model representing an item to be excluded from documentation."""
     type: str  # "function", "class", "directory"

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from model.File import FolderNode
 from utils.custom_types import PyObjectId
 
 
@@ -81,6 +82,16 @@ class ProjectUpdateResponseModel(ProjectResponseModel):
 class ProjectDeleteResponseModel(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     message: str = "Project deleted successfully"
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
+
+class ProjectStructureResponseModel(BaseModel):
+    project_id: str
+    project_name: str
+    root: FolderNode
 
     model_config = ConfigDict(
         populate_by_name=True,

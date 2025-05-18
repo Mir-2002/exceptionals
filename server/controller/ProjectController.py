@@ -1,11 +1,11 @@
-import datetime
+from datetime import datetime, timezone
 import fnmatch
 import os
 from pathlib import Path
 from typing import List
 from fastapi import Depends, HTTPException, UploadFile
-from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel
-from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ProjectStructureResponseModel, ZipUploadResponseModel
+from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
+from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ZipUploadResponseModel
 from utils.zip_parser import extract_and_process_zip
 from utils.db import get_db
 from bson import ObjectId
@@ -68,6 +68,38 @@ def normalize_path(path: str) -> str:
     """
     return path.replace("\\", "/").rstrip("/")
 
+def prepare_document_for_response(document):
+    """
+    Convert MongoDB document ObjectIds to strings for API responses.
+    
+    Args:
+        document: MongoDB document or dictionary containing potential ObjectId fields
+        
+    Returns:
+        A copy of the document with ObjectId values converted to strings
+    """
+    if document is None:
+        return None
+        
+    if isinstance(document, list):
+        return [prepare_document_for_response(item) for item in document]
+        
+    document_copy = document.copy()
+    
+    # Convert common ObjectId fields
+    for field in ["_id", "project_id", "user_id", "file_id"]:
+        if field in document_copy and isinstance(document_copy[field], ObjectId):
+            document_copy[field] = str(document_copy[field])
+    
+    # Handle nested dictionaries
+    for key, value in document_copy.items():
+        if isinstance(value, dict):
+            document_copy[key] = prepare_document_for_response(value)
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            document_copy[key] = [prepare_document_for_response(item) for item in value]
+            
+    return document_copy
+
 async def create(project: ProjectModel, db=Depends(get_db)):
     """
     Create a new project.
@@ -103,13 +135,11 @@ async def create(project: ProjectModel, db=Depends(get_db)):
                 detail="Project created but could not be retrieved"
             )
         
-        created_project["_id"] = str(created_project["_id"])
+        prepared_project = prepare_document_for_response(created_project)
 
-        # Return the response model
         return ProjectResponseModel(
-            **created_project,
-            message="Project created successfully"
-        )
+            **prepared_project,
+            message="Project created successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating project: {e}")
     
@@ -129,12 +159,11 @@ async def get(project_id: str, db=Depends(get_db)):
         # Return 404 if project not found
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-            
-        return ProjectResponseModel(**project)
+        
+        prepared_project = prepare_document_for_response(project)
+
+        return ProjectResponseModel(**prepared_project)
     except Exception as e:
-        # Log the exception but don't expose details to client
-        print(f"Error fetching project: {str(e)}")
-        # Return generic 404 for any errors related to finding the object
         raise HTTPException(status_code=404, detail="Project not found") 
     
 async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends(get_db)):
@@ -202,70 +231,61 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
         "processed": True
         })
 
-        # Return the response model
+        prepared_project = prepare_document_for_response(updated_project)
+
         return ProjectUpdateResponseModel(
-            **updated_project,
+            **prepared_project,
             file_count=file_count,
             processed_files=processed_files,
+
             updated_fields=update_data,
             message="Project updated successfully"
         )
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating project: {e}")
     
 async def remove(project_id: str, db=Depends(get_db)):
-    """
-    Delete a project by its ID.
-    
-    Args:
-        project_id (str): The ID of the project to delete.
-        db: The database instance.
-
-    Returns:
-        ProjectResponseModel: The deleted project data with additional information.
-    """
+    """Delete a project by its ID."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
     
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection error")
-    
     try:
+        # Convert to ObjectId for database queries
+        project_id_obj = ObjectId(project_id)
+        
         # Fetch the existing project
-        existing_project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        existing_project = await db.projects.find_one({"_id": project_id_obj})
         if not existing_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Get associated files for cleanup
-        files = await db.files.find({"project_id": ObjectId(project_id)}).to_list(length=None)
+        # Query files using string format to match how they're stored
+        files = await db.files.find({"project_id": project_id}).to_list(length=None)
         
-        # Delete the project from the database
-        project_result = await db.projects.delete_one({"_id": ObjectId(project_id)})
+        # Delete the project
+        project_result = await db.projects.delete_one({"_id": project_id_obj})
         if project_result.deleted_count == 0:
             raise HTTPException(status_code=500, detail="Project deletion failed")
         
-        # Delete all associated files from disk and database
+        # Delete associated files
         deleted_file_count = 0
         for file in files:
-            # Delete from disk if exists
             if "file_path" in file and os.path.exists(file["file_path"]):
                 try:
                     os.remove(file["file_path"])
                 except Exception as e:
                     print(f"Warning: Could not delete file {file['file_path']}: {e}")
             
-            # Delete from database
             file_result = await db.files.delete_one({"_id": file["_id"]})
             if file_result.deleted_count > 0:
                 deleted_file_count += 1
         
-        # Return the response model
+        prepared_project = prepare_document_for_response(existing_project)
+
         return ProjectDeleteResponseModel(
-            **existing_project,
-            message=f"Project deleted successfully with {deleted_file_count} associated files"
+            **prepared_project,
+            message=f"Project deleted successfully with {deleted_file_count} files removed"
         )
 
     except Exception as e:
@@ -428,9 +448,13 @@ async def get_project_structure(
     # Apply exclusions to the tree
     mark_exclusions(root_folder)
 
-    # Return response model
+    prepared_project = prepare_document_for_response(project)
+
+    # Return the correct structure response
     return ProjectStructureResponseModel(
-        project_id=project_id, project_name=project["name"], root=root_folder
+        project_id=prepared_project["_id"], 
+        project_name=prepared_project["name"], 
+        root=root_folder
     )
 
 async def set_project_exclusions(
@@ -463,7 +487,7 @@ async def set_project_exclusions(
             "$set": {
                 "excluded_directories": normalized_directories,
                 "excluded_files": normalized_files,
-                "updated_at": datetime.now(datetime.timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
             }
         },
     )
@@ -489,10 +513,12 @@ async def get_project_exclusions(project_id: str, db=Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    prepared_project = prepare_document_for_response(project)
+
     return ProjectExclusions(
-        project_id=str(project["_id"]),
-        excluded_directories=project.get("excluded_directories", []),
-        excluded_files=project.get("excluded_files", []),
+        project_id=prepared_project["_id"],
+        excluded_directories=prepared_project.get("excluded_directories", []),
+        excluded_files=prepared_project.get("excluded_files", []),
     )
 
 async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(get_db)):
@@ -546,11 +572,9 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
             # Get the created file
             created_file = await db.files.find_one({"_id": result.inserted_id})
             if created_file:
-                # Convert ObjectId fields to strings
-                created_file["_id"] = str(created_file["_id"])
-                created_file["project_id"] = str(created_file["project_id"])
-
-                inserted_files.append(FileResponseModel(**created_file))
+                # Use the helper function instead of manual conversion
+                prepared_file = prepare_document_for_response(created_file)
+                inserted_files.append(FileResponseModel(**prepared_file))
 
         # Update project stats
         await db.projects.update_one(
@@ -559,7 +583,7 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
                 "$set": {
                     "file_count": len(inserted_files),
                     "processed_files": processed_count,
-                    "updated_at": datetime.now(),
+                    "updated_at": datetime.now(timezone.utc),
                 }
             },
         )

@@ -58,6 +58,71 @@ def matches_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a name matches any of the given patterns."""
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
+def apply_exclusions_to_structure(
+    structure, 
+    file_exclusions, 
+    function_exclusions, 
+    use_default_exclusions
+):
+    """Apply exclusion rules to a file structure.
+    
+    Args:
+        structure: The file structure to apply exclusions to
+        file_exclusions: List of class names to exclude
+        function_exclusions: List of function names to exclude
+        use_default_exclusions: Whether to apply default exclusion patterns
+    
+    Returns:
+        The structure with exclusions applied
+    """
+    # Mark excluded classes
+    for cls in structure.classes:
+        # Check direct exclusions
+        direct_exclusion = cls.name in file_exclusions
+
+        # Check default exclusions
+        default_exclusion = False
+        if use_default_exclusions:
+            default_exclusion = matches_pattern(cls.name, DEFAULT_EXCLUDED_CLASSES)
+
+        cls.excluded = direct_exclusion or default_exclusion
+        cls.default_exclusion = default_exclusion
+
+        # Mark excluded methods
+        for method in cls.methods:
+            method_full_name = f"{cls.name}.{method.name}"
+            direct_method_exclusion = method_full_name in function_exclusions
+
+            # Check default exclusions for methods
+            default_method_exclusion = False
+            if use_default_exclusions:
+                default_method_exclusion = matches_pattern(
+                    method.name, DEFAULT_EXCLUDED_FUNCTIONS
+                )
+
+            # Method is excluded if directly excluded, by default pattern, or class is excluded
+            method.excluded = (
+                direct_method_exclusion or default_method_exclusion or cls.excluded
+            )
+            method.default_exclusion = default_method_exclusion
+            method.inherited_exclusion = cls.excluded and not (
+                direct_method_exclusion or default_method_exclusion
+            )
+
+    # Mark excluded functions
+    for func in structure.functions:
+        direct_exclusion = func.name in function_exclusions
+
+        # Check default exclusions
+        default_exclusion = False
+        if use_default_exclusions:
+            default_exclusion = matches_pattern(func.name, DEFAULT_EXCLUDED_FUNCTIONS)
+
+        func.excluded = direct_exclusion or default_exclusion
+        func.default_exclusion = default_exclusion
+        
+    return structure
+
 async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
     """Upload a Python file to a project and extract its structure."""
     if not ObjectId.is_valid(project_id):
@@ -237,7 +302,7 @@ async def get_file_structure(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Get exclusions - moved outside both branches to avoid duplication
+    # Get exclusions 
     file_exclusions = file.get("excluded_classes", [])
     function_exclusions = file.get("excluded_functions", [])
 
@@ -258,58 +323,10 @@ async def get_file_structure(
                     if hasattr(func, "code"):
                         func.code = None
 
-            # Apply exclusions to cached structure - THIS IS THE ADDED CODE
-            # Mark excluded classes
-            for cls in structure.classes:
-                # Check direct exclusions
-                direct_exclusion = cls.name in file_exclusions
-
-                # Check default exclusions
-                default_exclusion = False
-                if use_default_exclusions:
-                    default_exclusion = matches_pattern(
-                        cls.name, DEFAULT_EXCLUDED_CLASSES
-                    )
-
-                cls.excluded = direct_exclusion or default_exclusion
-                cls.default_exclusion = default_exclusion
-
-                # Mark excluded methods
-                for method in cls.methods:
-                    method_full_name = f"{cls.name}.{method.name}"
-                    direct_method_exclusion = method_full_name in function_exclusions
-
-                    # Check default exclusions for methods
-                    default_method_exclusion = False
-                    if use_default_exclusions:
-                        default_method_exclusion = matches_pattern(
-                            method.name, DEFAULT_EXCLUDED_FUNCTIONS
-                        )
-
-                    # Method is excluded if directly excluded, by default pattern, or class is excluded
-                    method.excluded = (
-                        direct_method_exclusion
-                        or default_method_exclusion
-                        or cls.excluded
-                    )
-                    method.default_exclusion = default_method_exclusion
-                    method.inherited_exclusion = cls.excluded and not (
-                        direct_method_exclusion or default_method_exclusion
-                    )
-
-            # Mark excluded functions
-            for func in structure.functions:
-                direct_exclusion = func.name in function_exclusions
-
-                # Check default exclusions
-                default_exclusion = False
-                if use_default_exclusions:
-                    default_exclusion = matches_pattern(
-                        func.name, DEFAULT_EXCLUDED_FUNCTIONS
-                    )
-
-                func.excluded = direct_exclusion or default_exclusion
-                func.default_exclusion = default_exclusion
+            # Apply exclusions to cached structure using helper function
+            structure = apply_exclusions_to_structure(
+                structure, file_exclusions, function_exclusions, use_default_exclusions
+            )
 
             return structure
         except Exception as e:
@@ -334,53 +351,10 @@ async def get_file_structure(
             {"$set": {"structure": structure_data, "processed": True}},
         )
 
-        # Mark excluded classes
-        for cls in structure.classes:
-            # Check direct exclusions
-            direct_exclusion = cls.name in file_exclusions
-
-            # Check default exclusions
-            default_exclusion = False
-            if use_default_exclusions:
-                default_exclusion = matches_pattern(cls.name, DEFAULT_EXCLUDED_CLASSES)
-
-            cls.excluded = direct_exclusion or default_exclusion
-            cls.default_exclusion = default_exclusion
-
-            # Mark excluded methods
-            for method in cls.methods:
-                method_full_name = f"{cls.name}.{method.name}"
-                direct_method_exclusion = method_full_name in function_exclusions
-
-                # Check default exclusions for methods
-                default_method_exclusion = False
-                if use_default_exclusions:
-                    default_method_exclusion = matches_pattern(
-                        method.name, DEFAULT_EXCLUDED_FUNCTIONS
-                    )
-
-                # Method is excluded if directly excluded, by default pattern, or class is excluded
-                method.excluded = (
-                    direct_method_exclusion or default_method_exclusion or cls.excluded
-                )
-                method.default_exclusion = default_method_exclusion
-                method.inherited_exclusion = cls.excluded and not (
-                    direct_method_exclusion or default_method_exclusion
-                )
-
-        # Mark excluded functions
-        for func in structure.functions:
-            direct_exclusion = func.name in function_exclusions
-
-            # Check default exclusions
-            default_exclusion = False
-            if use_default_exclusions:
-                default_exclusion = matches_pattern(
-                    func.name, DEFAULT_EXCLUDED_FUNCTIONS
-                )
-
-            func.excluded = direct_exclusion or default_exclusion
-            func.default_exclusion = default_exclusion
+        # Apply exclusions to newly parsed structure using helper function
+        structure = apply_exclusions_to_structure(
+            structure, file_exclusions, function_exclusions, use_default_exclusions
+        )
 
         return structure
     else:

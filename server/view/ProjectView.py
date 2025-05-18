@@ -3,8 +3,8 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from controller.ProjectController import create, get, remove, update, get_project_structure, set_project_exclusions, get_project_exclusions, upload_project_zip
-from model.Project import ProjectDeleteResponseModel, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel
-from model.File import ExclusionResponse, ProjectExclusions, ProjectStructureResponseModel, ZipUploadResponseModel
+from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
+from model.File import ExclusionResponse, ProjectExclusions, ZipUploadResponseModel
 from utils.db import get_db
 
 
@@ -37,7 +37,7 @@ async def get_structure_for_project(project_id: str, use_default_exclusions: boo
     return await get_project_structure(project_id, use_default_exclusions,
     db)
 
-@router.post("/projects/{project_id}/exclusions", response_model=ExclusionResponse)
+@router.post("/projects/{project_id}/exclusions", response_model=ProjectExclusionResponse)
 async def update_project_exclusions(
     project_id: str,
     exclusions: ProjectExclusions,
