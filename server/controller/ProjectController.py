@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import fnmatch
+import logging
 import os
 from pathlib import Path
 from typing import List
@@ -7,10 +8,10 @@ from fastapi import Depends, HTTPException, UploadFile
 from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
 from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ZipUploadResponseModel
 from utils.zip_parser import extract_and_process_zip
-from utils.db import get_db
+from utils.db import get_db, get_transaction_session
 from bson import ObjectId
 
-
+logger = logging.getLogger(__name__)
 
 # Default file exclusions
 DEFAULT_EXCLUDED_FILES = [
@@ -102,16 +103,9 @@ def prepare_document_for_response(document):
 
 async def create(project: ProjectModel, db=Depends(get_db)):
     """
-    Create a new project.
-    
-    Args:
-        project (ProjectModel): The project data to create.
-        db: The database instance.
-
-    Returns:
-        ProjectResponseModel: The created project data with additional information.
+    Create a new project with transaction support if available.
     """
-    # Check for existing project
+    # Check for existing project (outside transaction for efficiency)
     existing_project = await db.projects.find_one({"name": project.name})
     if existing_project:
         raise HTTPException(
@@ -123,12 +117,27 @@ async def create(project: ProjectModel, db=Depends(get_db)):
         raise HTTPException(status_code=500, detail="Database connection error")
     
     try:
-        # Insert the project into the database
+        # Insert the project with transaction if available
         project_data = project.model_dump(by_alias=True)
-        result = await db.projects.insert_one(project_data)
+        created_project = None
         
-        # Fetch the complete document to ensure consistency
-        created_project = await db.projects.find_one({"_id": result.inserted_id})
+        async with get_transaction_session("Create new project") as session:
+            if session:
+                # With transaction
+                result = await db.projects.insert_one(project_data, session=session)
+                
+                # Fetch the complete document within transaction
+                created_project = await db.projects.find_one(
+                    {"_id": result.inserted_id}, 
+                    session=session
+                )
+            else:
+                # Without transaction
+                result = await db.projects.insert_one(project_data)
+                
+                # Fetch the complete document
+                created_project = await db.projects.find_one({"_id": result.inserted_id})
+        
         if not created_project:
             raise HTTPException(
                 status_code=500,
@@ -136,12 +145,16 @@ async def create(project: ProjectModel, db=Depends(get_db)):
             )
         
         prepared_project = prepare_document_for_response(created_project)
+        logger.info(f"Created new project: {project_data.get('name')}")
 
         return ProjectResponseModel(
             **prepared_project,
             message="Project created successfully")
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating project: {e}")
+        logger.error(f"Error creating project: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating project: {str(e)}")
     
 async def get(project_id: str, db=Depends(get_db)):
     """Get a project by ID."""
@@ -168,15 +181,7 @@ async def get(project_id: str, db=Depends(get_db)):
     
 async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends(get_db)):
     """
-    Update a project by its ID.
-    
-    Args:
-        project_id (str): The ID of the project to update.
-        project_update (ProjectUpdateModel): The updated project data.
-        db: The database instance.
-
-    Returns:
-        ProjectResponseModel: The updated project data with additional information.
+    Update a project by its ID with transaction support if available.
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
@@ -185,8 +190,9 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
         raise HTTPException(status_code=500, detail="Database connection error")
     
     try:
-        # Fetch the existing project
-        existing_project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        # Fetch the existing project (outside transaction)
+        project_id_obj = ObjectId(project_id)
+        existing_project = await db.projects.find_one({"_id": project_id_obj})
         if not existing_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
@@ -199,11 +205,11 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
                 detail="No valid fields provided for update"
             )
         
-        # Check for name uniqueness if name is being updated
+        # Check for name uniqueness if name is being updated (outside transaction)
         if "name" in update_data:
             existing_with_name = await db.projects.find_one({
                 "name": update_data["name"],
-                "_id": {"$ne": ObjectId(project_id)}
+                "_id": {"$ne": project_id_obj}
             })
             if existing_with_name:
                 raise HTTPException(
@@ -211,43 +217,75 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
                     detail="Another project with this name already exists"
                 )
         
-        # Update the project in the database
-        updated_project = await db.projects.find_one_and_update(
-            {"_id": ObjectId(project_id)},
-            {"$set": update_data},
-            return_document=True  # Returns the updated document
-        )
+        # Store a copy of update_data for response (without timestamps)
+        update_data_for_response = update_data.copy()
+        
+        # Add updated timestamp for the database update
+        updated_time = datetime.now(timezone.utc)
+        
+        # Update with transaction if available
+        updated_project = None
+        file_count = 0
+        processed_files = 0
+        
+        async with get_transaction_session(f"Update project {project_id}") as session:
+            if session:
+                # With transaction
+                updated_project = await db.projects.find_one_and_update(
+                    {"_id": project_id_obj},
+                    {"$set": {**update_data, "updated_at": updated_time}},  # Fixed syntax
+                    return_document=True,
+                    session=session
+                )
+                
+                # Get file statistics within transaction
+                file_count = await db.files.count_documents(
+                    {"project_id": project_id_obj},
+                    session=session
+                )
+                processed_files = await db.files.count_documents(
+                    {"project_id": project_id_obj, "processed": True},
+                    session=session
+                )
+            else:
+                # Without transaction
+                updated_project = await db.projects.find_one_and_update(
+                    {"_id": project_id_obj},
+                    {"$set": {**update_data, "updated_at": updated_time}},  # Fixed syntax
+                    return_document=True
+                )
+                
+                # Get file statistics
+                file_count = await db.files.count_documents({"project_id": project_id_obj})
+                processed_files = await db.files.count_documents({
+                    "project_id": project_id_obj,
+                    "processed": True
+                })
         
         if not updated_project:
             raise HTTPException(
                 status_code=500,
                 detail="Project update failed"
             )
-        
-        # Get file statistics
-        file_count = await db.files.count_documents({"project_id": ObjectId(project_id)})
-        processed_files = await db.files.count_documents({
-        "project_id": ObjectId(project_id),
-        "processed": True
-        })
 
         prepared_project = prepare_document_for_response(updated_project)
+        logger.info(f"Updated project {project_id}: {', '.join(update_data_for_response.keys())}")
 
         return ProjectUpdateResponseModel(
             **prepared_project,
             file_count=file_count,
             processed_files=processed_files,
-
-            updated_fields=update_data,
+            updated_fields=update_data_for_response,  # Use the copy without the timestamp
             message="Project updated successfully"
         )
-    except HTTPException:
-        raise
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating project: {e}")
+        logger.error(f"Error updating project: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating project: {str(e)}")
     
 async def remove(project_id: str, db=Depends(get_db)):
-    """Delete a project by its ID."""
+    """Delete a project by its ID with transaction support if available."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
     
@@ -255,41 +293,82 @@ async def remove(project_id: str, db=Depends(get_db)):
         # Convert to ObjectId for database queries
         project_id_obj = ObjectId(project_id)
         
-        # Fetch the existing project
+        # Fetch the existing project (outside transaction)
         existing_project = await db.projects.find_one({"_id": project_id_obj})
         if not existing_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Query files using string format to match how they're stored
-        files = await db.files.find({"project_id": project_id}).to_list(length=None)
+        # Query files using string format to match how they're stored (outside transaction)
+        files = await db.files.find({"project_id": project_id_obj}).to_list(length=None)
         
-        # Delete the project
-        project_result = await db.projects.delete_one({"_id": project_id_obj})
-        if project_result.deleted_count == 0:
-            raise HTTPException(status_code=500, detail="Project deletion failed")
-        
-        # Delete associated files
+        # Delete with transaction if available
         deleted_file_count = 0
+        
+        async with get_transaction_session(f"Delete project {project_id}") as session:
+            if session:
+                # With transaction
+                # Delete the project
+                project_result = await db.projects.delete_one(
+                    {"_id": project_id_obj}, 
+                    session=session
+                )
+                
+                if project_result.deleted_count == 0:
+                    raise HTTPException(status_code=500, detail="Project deletion failed")
+                
+                # Delete associated files in database
+                if files:
+                    file_ids = [file["_id"] for file in files]
+                    file_result = await db.files.delete_many(
+                        {"_id": {"$in": file_ids}},
+                        session=session
+                    )
+                    deleted_file_count = file_result.deleted_count
+            else:
+                # Without transaction
+                # Delete the project
+                project_result = await db.projects.delete_one({"_id": project_id_obj})
+                
+                if project_result.deleted_count == 0:
+                    raise HTTPException(status_code=500, detail="Project deletion failed")
+                
+                # Delete associated files one by one
+                for file in files:
+                    file_result = await db.files.delete_one({"_id": file["_id"]})
+                    if file_result.deleted_count > 0:
+                        deleted_file_count += 1
+        
+        # Now delete files from filesystem (after successful database operations)
         for file in files:
             if "file_path" in file and os.path.exists(file["file_path"]):
                 try:
                     os.remove(file["file_path"])
                 except Exception as e:
-                    print(f"Warning: Could not delete file {file['file_path']}: {e}")
-            
-            file_result = await db.files.delete_one({"_id": file["_id"]})
-            if file_result.deleted_count > 0:
-                deleted_file_count += 1
+                    logger.warning(f"Could not delete file {file['file_path']}: {e}")
+        
+        # Delete the entire project directory
+        project_dir = os.path.join(UPLOAD_DIR, str(project_id))
+        if os.path.exists(project_dir):
+            try:
+                import shutil
+                shutil.rmtree(project_dir)
+                logger.info(f"Removed project directory: {project_dir}")
+            except Exception as e:
+                logger.warning(f"Could not delete project directory {project_dir}: {e}")
         
         prepared_project = prepare_document_for_response(existing_project)
+        logger.info(f"Deleted project: {existing_project.get('name', project_id)}")
 
         return ProjectDeleteResponseModel(
             **prepared_project,
             message=f"Project deleted successfully with {deleted_file_count} files removed"
         )
 
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting project: {e}")
+        logger.error(f"Error deleting project: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting project: {str(e)}")
     
 async def get_project_structure(
     project_id: str,
@@ -310,14 +389,15 @@ async def get_project_structure(
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
-
+    
+    project_id_obj = ObjectId(project_id)
     # Get project info
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Get all files for this project
-    files = await db.files.find({"project_id": project_id}).to_list(length=None)
+    files = await db.files.find({"project_id": project_id_obj}).to_list(length=None)
 
     # Create structure
     root_folder = FolderNode(name="root")
@@ -390,7 +470,7 @@ async def get_project_structure(
             current_path = node.name
 
         # Debug info
-        print(f"Checking node: {node.name}, path: {current_path}")
+        logger.debug(f"Checking node: {node.name}, path: {current_path}")
 
         # INSERT YOUR CODE HERE ↓
         if node.name == "root":
@@ -410,8 +490,8 @@ async def get_project_structure(
             # Check for direct exclusion
             direct_exclusion = normalized_path in normalized_exclusion_dirs
 
-            print(f"Comparing: normalized_path='{normalized_path}' with exclusions={normalized_exclusion_dirs}")
-            print(f"Direct exclusion result: {direct_exclusion}")
+            logger.debug(f"Comparing: normalized_path='{normalized_path}' with exclusions={normalized_exclusion_dirs}")
+            logger.debug(f"Direct exclusion result: {direct_exclusion}")
 
             # Apply default exclusions if enabled
             default_exclusion = False
@@ -431,8 +511,8 @@ async def get_project_structure(
             # This is a file
             direct_exclusion = normalized_path in normalized_exclusion_files
 
-            print(f"Comparing: normalized_path='{normalized_path}' with exclusions={normalized_exclusion_files}")
-            print(f"Direct exclusion result: {direct_exclusion}")
+            logger.debug(f"Comparing: normalized_path='{normalized_path}' with exclusions={normalized_exclusion_files}")
+            logger.debug(f"Direct exclusion result: {direct_exclusion}")
 
             # Apply default exclusions if enabled
             default_exclusion = False
@@ -462,42 +542,65 @@ async def set_project_exclusions(
 ):
     """
     Set directories and files to exclude from documentation for a project.
-
-    Args:
-        project_id: The ID of the project
-        exclusions: Exclusion settings
-        db: Database connection
+    Uses transactions when available.
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
 
+    try:
+        # Check if project exists (outside transaction)
+        project_id_obj = ObjectId(project_id)
+        project = await db.projects.find_one({"_id": project_id_obj})
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        normalized_directories = [normalize_path(d) for d in exclusions.excluded_directories]
+        normalized_files = [normalize_path(f) for f in exclusions.excluded_files]
+
+        # Update exclusions with transaction if available
+        async with get_transaction_session(f"Update project exclusions for {project_id}") as session:
+            if session:
+                # With transaction
+                result = await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$set": {
+                            "excluded_directories": normalized_directories,
+                            "excluded_files": normalized_files,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                    session=session
+                )
+            else:
+                # Without transaction
+                result = await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$set": {
+                            "excluded_directories": normalized_directories,
+                            "excluded_files": normalized_files,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    }
+                )
+                
+        if result.modified_count == 0:
+            logger.warning(f"No changes made to project exclusions for {project_id}")
+        
+        logger.info(f"Updated exclusions for project {project_id}")
+        return ProjectExclusionResponse(
+            success=True,
+            message="Exclusions updated successfully",
+            project_id=project_id,
+        )
     
-    # Check if project exists
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    normalized_directories = [normalize_path(d) for d in exclusions.excluded_directories]
-    normalized_files = [normalize_path(f) for f in exclusions.excluded_files]
-
-    # Update exclusions
-    await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
-        {
-            "$set": {
-                "excluded_directories": normalized_directories,
-                "excluded_files": normalized_files,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
-    )
-
-    return ProjectExclusionResponse(
-        success=True,
-        message="Exclusions updated successfully",
-        project_id=project_id,
-    )
-
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error updating project exclusions: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating exclusions: {str(e)}")
+    
 async def get_project_exclusions(project_id: str, db=Depends(get_db)):
     """
     Get current exclusions for a project.
@@ -509,35 +612,37 @@ async def get_project_exclusions(project_id: str, db=Depends(get_db)):
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
 
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
 
-    prepared_project = prepare_document_for_response(project)
+        prepared_project = prepare_document_for_response(project)
 
-    return ProjectExclusions(
-        project_id=prepared_project["_id"],
-        excluded_directories=prepared_project.get("excluded_directories", []),
-        excluded_files=prepared_project.get("excluded_files", []),
-    )
+        return ProjectExclusions(
+            project_id=prepared_project["_id"],
+            excluded_directories=prepared_project.get("excluded_directories", []),
+            excluded_files=prepared_project.get("excluded_files", []),
+        )
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error retrieving project exclusions: {e}")
+        raise HTTPException(status_code=500, 
+            detail=f"Error retrieving project exclusions: {str(e)}")
 
 async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(get_db)):
     """
     Upload and extract a ZIP file containing a project structure.
-
-    Args:
-        project_id: The project to add files to
-        zip_file: The uploaded ZIP file
-        db: Database connection
-
-    Returns:
-        Dictionary containing upload results
+    Uses transactions when available.
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
+    
+    project_id_obj = ObjectId(project_id)
 
-    # Check if project exists
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    # Check if project exists (outside transaction)
+    project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -549,45 +654,78 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
     project_dir = os.path.join(UPLOAD_DIR, project_id)
 
     try:
-        # Process the ZIP file
+        # Process the ZIP file (outside transaction - filesystem operation)
         file_metadata_list = await extract_and_process_zip(
             zip_file, project_id, project_dir
         )
 
-        # Insert files into database
+        # Insert files with transaction if available
         inserted_files = []
         processed_count = 0
+        
+        async with get_transaction_session(f"Upload ZIP to project {project_id}") as session:
+            for metadata in file_metadata_list:
+                if 'project_id' in metadata and isinstance(metadata['project_id'], str):
+                    metadata['project_id'] = project_id_obj
+                
+                # Create file document
+                file_doc = FileModel(**metadata)
+                file_dict = file_doc.model_dump(by_alias=True)
+                
+                # Insert with or without transaction
+                if session:
+                    # With transaction
+                    result = await db.files.insert_one(file_dict, session=session)
+                    
+                    # Get the created file
+                    created_file = await db.files.find_one(
+                        {"_id": result.inserted_id}, 
+                        session=session
+                    )
+                else:
+                    # Without transaction
+                    result = await db.files.insert_one(file_dict)
+                    
+                    # Get the created file
+                    created_file = await db.files.find_one({"_id": result.inserted_id})
 
-        for metadata in file_metadata_list:
-            # Create file document
-            file_doc = FileModel(**metadata)
+                # Track processed files
+                if metadata["processed"]:
+                    processed_count += 1
 
-            # Save to database
-            result = await db.files.insert_one(file_doc.model_dump(by_alias=True))
+                if created_file:
+                    # Use the helper function instead of manual conversion
+                    prepared_file = prepare_document_for_response(created_file)
+                    inserted_files.append(FileResponseModel(**prepared_file))
 
-            # Track processed files
-            if metadata["processed"]:
-                processed_count += 1
+            # Update project stats
+            if session:
+                # With transaction
+                await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$set": {
+                            "file_count": len(inserted_files),
+                            "processed_files": processed_count,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                    session=session
+                )
+            else:
+                # Without transaction
+                await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$set": {
+                            "file_count": len(inserted_files),
+                            "processed_files": processed_count,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    }
+                )
 
-            # Get the created file
-            created_file = await db.files.find_one({"_id": result.inserted_id})
-            if created_file:
-                # Use the helper function instead of manual conversion
-                prepared_file = prepare_document_for_response(created_file)
-                inserted_files.append(FileResponseModel(**prepared_file))
-
-        # Update project stats
-        await db.projects.update_one(
-            {"_id": ObjectId(project_id)},
-            {
-                "$set": {
-                    "file_count": len(inserted_files),
-                    "processed_files": processed_count,
-                    "updated_at": datetime.now(timezone.utc),
-                }
-            },
-        )
-
+        logger.info(f"Uploaded ZIP with {len(inserted_files)} files to project {project_id}")
         return ZipUploadResponseModel(
             message=f"Successfully uploaded and processed {len(inserted_files)} files ({processed_count} Python files processed)",
             processed_count=processed_count,
@@ -604,7 +742,10 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
             ],
         )
 
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
+        logger.error(f"Error processing ZIP file: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error processing ZIP file: {str(e)}"
         )

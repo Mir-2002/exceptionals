@@ -48,6 +48,15 @@ class ProjectInDBModel(ProjectModel):
         json_encoders={ObjectId: str}
     )
 
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "populate_by_name": True,
+        "json_encoders": {
+            ObjectId: str,
+            PyObjectId: str
+        }
+    }
+
 class ProjectResponseModel(ProjectModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     message: str = "Operation successful"

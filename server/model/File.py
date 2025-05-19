@@ -51,7 +51,7 @@ class FileStructure(BaseModel):
 
 class FileModel(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    project_id: str = Field(..., alias="project_id")
+    project_id: PyObjectId
     file_name: str
     file_path: str # Path on server
     content_type: str
@@ -98,6 +98,15 @@ class FileModel(BaseModel):
         if value > cls.MAX_FILE_SIZE:
             raise ValueError(f"File size exceeds maximum allowed size of {cls.MAX_FILE_SIZE/(1024*1024)}MB.")
         return value
+    
+    model_config = {
+        "json_encoders": {
+            ObjectId: str,
+            PyObjectId: str
+        },
+        "arbitrary_types_allowed": True,
+        "populate_by_name": True
+    }
     
 class FileResponseModel(BaseModel):
     id: str = Field(..., alias="_id")

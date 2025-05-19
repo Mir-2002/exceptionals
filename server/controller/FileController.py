@@ -1,3 +1,4 @@
+import logging
 import os
 from fastapi import Depends, HTTPException, UploadFile
 from model.File import (
@@ -9,15 +10,17 @@ from model.File import (
     FileResponseModel,
     FileStructure,
 )
-from utils.db import get_db
+from utils.document_helper import prepare_document_for_response, create_document_model
+from utils.custom_types import PyObjectId
+from utils.db import get_db, get_transaction_session
 from bson import ObjectId
 from datetime import datetime, timezone
 from utils.parser import CodeParserService
-from utils.zip_parser import extract_and_process_zip
 from typing import List
 import fnmatch
 
-
+# Set up logging
+logger = logging.getLogger(__name__)
 # Configure file storage
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -127,9 +130,11 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
     """Upload a Python file to a project and extract its structure."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
+    
+    project_id_obj = ObjectId(project_id)
 
-    # Check if project exists
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    # Check if project exists (outside transaction for efficiency)
+    project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -144,13 +149,9 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
     if safe_filename != file.filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Create project directory if it doesn't exist
-    project_dir = os.path.join(UPLOAD_DIR, project_id)
-    os.makedirs(project_dir, exist_ok=True)
-
-    # Check for duplicate files
+    # Check for duplicate files (outside transaction for efficiency)
     existing_file = await db.files.find_one(
-        {"project_id": project_id, "file_name": safe_filename}
+        {"project_id": project_id_obj, "file_name": safe_filename}
     )
 
     if existing_file:
@@ -158,12 +159,16 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             status_code=409, detail=f"File {safe_filename} already exists"
         )
 
+    # Create project directory if it doesn't exist
+    project_dir = os.path.join(UPLOAD_DIR, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+
     # Save file with temporary name first
     temp_file_path = os.path.join(project_dir, f"temp_{datetime.now().timestamp()}.py")
     file_path = os.path.join(project_dir, safe_filename)
 
     try:
-        # Read and save file content
+        # Read and save file content (filesystem operation, outside transaction)
         content = await file.read()
         with open(temp_file_path, "wb") as f:
             f.write(content)
@@ -173,7 +178,7 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             structure = code_parser.parse_file(temp_file_path)
             processed = True
         except Exception as e:
-            print(f"Error parsing file: {str(e)}")
+            logger.error(f"Error parsing file: {str(e)}")
             # Create minimal structure on parsing failure
             structure = {
                 "file_name": safe_filename,
@@ -183,12 +188,12 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             }
             processed = False
 
-        # Rename to final filename
+        # Rename to final filename (filesystem operation)
         os.rename(temp_file_path, file_path)
 
         # Create file document
         file_doc = FileModel(
-            project_id=project_id,
+            project_id=project_id_obj,
             file_name=safe_filename,
             file_path=file_path,
             content_type=file.content_type,
@@ -205,29 +210,77 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             ),
         )
 
-        # Save to database
-        result = await db.files.insert_one(file_doc.model_dump(by_alias=True))
+        # Database operations with transaction fallback
+        created_file = None
+        async with get_transaction_session(f"Upload file {safe_filename} to project {project_id}") as session:
+            # Save to database with or without transaction
+            if session:
+                # With transaction
+                result = await db.files.insert_one(
+                    file_doc.model_dump(by_alias=True), 
+                    session=session
+                )
 
-        # Get the created file
-        created_file = await db.files.find_one({"_id": result.inserted_id})
-        if not created_file:
-            raise HTTPException(status_code=500, detail="Failed to create file record")
+                # Get the created file within the transaction
+                created_file = await db.files.find_one(
+                    {"_id": result.inserted_id},
+                    session=session
+                )
+                
+                # Update project stats in the same transaction
+                await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$inc": {"file_count": 1},
+                        "$set": {"updated_at": datetime.now(timezone.utc)},
+                    },
+                    session=session
+                )
+            else:
+                # Without transaction - operations are not atomic
+                result = await db.files.insert_one(
+                    file_doc.model_dump(by_alias=True)
+                )
+                
+                # Get the created file outside transaction
+                created_file = await db.files.find_one(
+                    {"_id": result.inserted_id}
+                )
+                
+                # Update project stats as a separate operation
+                await db.projects.update_one(
+                    {"_id": project_id_obj},
+                    {
+                        "$inc": {"file_count": 1},
+                        "$set": {"updated_at": datetime.now(timezone.utc)},
+                    }
+                )
+            
+            if not created_file:
+                raise HTTPException(status_code=500, detail="Failed to create file record")
 
-        # Convert ObjectId fields to strings
-        created_file["_id"] = str(created_file["_id"])
-        created_file["project_id"] = str(created_file["project_id"])
-
-        return FileResponseModel(**created_file)
+        # Prepare response outside transaction
+        logger.info(f"Successfully uploaded file {safe_filename} to project {project_id}")
+        
+        return create_document_model(FileResponseModel, created_file)
 
     except Exception as e:
         # Clean up temp file if it exists
         if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+            try:
+                os.remove(temp_file_path)
+            except:
+                pass
+                
+        # If the final file was created, try to remove it too
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+                
+        logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
-
-
-
-
 
 async def get_project_files(
     project_id: str, skip: int = 0, limit: int = 100, db=Depends(get_db)
@@ -235,17 +288,19 @@ async def get_project_files(
     """Get all files in a project."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
+    
+    project_id_obj = ObjectId(project_id)
 
     try:
 
         # Check if project exists
-        project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        project = await db.projects.find_one({"_id": project_id_obj})
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
         # Query files
         files = (
-            await db.files.find({"project_id": project_id})
+            await db.files.find({"project_id": project_id_obj})
             .skip(skip)
             .limit(limit)
             .to_list(length=limit)
@@ -255,20 +310,20 @@ async def get_project_files(
         response_files = []
         for file in files:
             try:
-                # Convert ObjectIds to strings
-                file["_id"] = str(file["_id"])
-                file["project_id"] = str(file["project_id"])
+                file = prepare_document_for_response(file)
 
                 # Create response model
                 response_files.append(FileResponseModel(**file))
             except Exception as e:
-                print(f"Skipping malformed file document {file.get('_id')}: {str(e)}")
+                logger.warning(f"Skipping malformed file document {file.get('_id')}: {str(e)}")
                 continue
 
         return response_files
-
+    except HTTPException as http_ex:
+        # Re-raise HTTP exceptions directly
+        raise http_ex
     except Exception as e:
-        print(f"Error in get_project_files: {str(e)}")
+        logger.error(f"Error in get_project_files: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -276,17 +331,18 @@ async def get_file(file_id: str, db=Depends(get_db)):
     """Get a file by ID."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
-
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    # Convert ObjectId fields to strings
-    file["_id"] = str(file["_id"])
-    file["project_id"] = str(file["project_id"])
-
-    return FileResponseModel(**file)
-
+    
+    try:
+        file = await db.files.find_one({"_id": ObjectId(file_id)})
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        return create_document_model(FileResponseModel, file)
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error retrieving file: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving file")
 
 async def get_file_structure(
     file_id: str,
@@ -298,135 +354,206 @@ async def get_file_structure(
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        file = await db.files.find_one({"_id": ObjectId(file_id)})
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
 
-    # Get exclusions 
-    file_exclusions = file.get("excluded_classes", [])
-    function_exclusions = file.get("excluded_functions", [])
+        # Get exclusions 
+        file_exclusions = file.get("excluded_classes", [])
+        function_exclusions = file.get("excluded_functions", [])
 
-    # Return structure if available, or parse file if not processed yet
-    if file.get("processed") and file.get("structure"):
-        try:
-            structure = FileStructure.model_validate(file["structure"])
+        # Return structure if available, or parse file if not processed yet
+        if file.get("processed") and file.get("structure"):
+            try:
+                structure = FileStructure.model_validate(file["structure"])
 
-            # Remove code fields if not requested
-            if not include_code:
-                for cls in getattr(structure, "classes", []):
-                    if hasattr(cls, "code"):
-                        cls.code = None
-                    for method in getattr(cls, "methods", []):
-                        if hasattr(method, "code"):
-                            method.code = None
-                for func in getattr(structure, "functions", []):
-                    if hasattr(func, "code"):
-                        func.code = None
+                # Remove code fields if not requested
+                if not include_code:
+                    for cls in getattr(structure, "classes", []):
+                        if hasattr(cls, "code"):
+                            cls.code = None
+                        for method in getattr(cls, "methods", []):
+                            if hasattr(method, "code"):
+                                method.code = None
+                    for func in getattr(structure, "functions", []):
+                        if hasattr(func, "code"):
+                            func.code = None
 
-            # Apply exclusions to cached structure using helper function
+                # Apply exclusions to cached structure using helper function
+                structure = apply_exclusions_to_structure(
+                    structure, file_exclusions, function_exclusions, use_default_exclusions
+                )
+
+                return structure
+            except Exception as e:
+                logger.error(f"Error validating file structure: {str(e)}")
+                raise HTTPException(status_code=500, detail="Invalid file structure format")
+
+        # If file exists but structure not processed, parse it now
+        if os.path.exists(file["file_path"]):
+            structure = code_parser.parse_file(file["file_path"])
+
+            # Prepare structure for database
+            structure_data = structure
+            if not isinstance(structure, dict):
+                if hasattr(structure, "model_dump"):
+                    structure_data = structure.model_dump()
+                elif hasattr(structure, "dict"):
+                    structure_data = structure.dict()
+
+            # Update the file with structure - with transaction fallback
+            async with get_transaction_session(f"Update file structure for {file_id}") as session:
+                if session:
+                    # With transaction
+                    await db.files.update_one(
+                        {"_id": ObjectId(file_id)},
+                        {"$set": {"structure": structure_data, "processed": True}},
+                        session=session
+                    )
+                else:
+                    # Without transaction
+                    await db.files.update_one(
+                        {"_id": ObjectId(file_id)},
+                        {"$set": {"structure": structure_data, "processed": True}}
+                    )
+
+            # Apply exclusions to newly parsed structure using helper function
             structure = apply_exclusions_to_structure(
                 structure, file_exclusions, function_exclusions, use_default_exclusions
             )
 
             return structure
-        except Exception as e:
-            print(f"Error validating file structure: {str(e)}")
-            raise HTTPException(status_code=500, detail="Invalid file structure format")
-
-    # If file exists but structure not processed, parse it now
-    if os.path.exists(file["file_path"]):
-        structure = code_parser.parse_file(file["file_path"])
-
-        # Prepare structure for database
-        structure_data = structure
-        if not isinstance(structure, dict):
-            if hasattr(structure, "model_dump"):
-                structure_data = structure.model_dump()
-            elif hasattr(structure, "dict"):
-                structure_data = structure.dict()
-
-        # Update the file with structure
-        await db.files.update_one(
-            {"_id": ObjectId(file_id)},
-            {"$set": {"structure": structure_data, "processed": True}},
-        )
-
-        # Apply exclusions to newly parsed structure using helper function
-        structure = apply_exclusions_to_structure(
-            structure, file_exclusions, function_exclusions, use_default_exclusions
-        )
-
-        return structure
-    else:
-        raise HTTPException(status_code=404, detail="File content not found")
-
+        else:
+            raise HTTPException(status_code=404, detail="File content not found")
+    except HTTPException as http_ex:
+        # Re-raise HTTP exceptions
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error getting file structure: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving file structure: {str(e)}")
 
 async def get_file_content(file_id: str, db=Depends(get_db)):
     """Get the content of a file."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    # Read file content
     try:
-        if os.path.exists(file["file_path"]):
-            try:
-                # Try UTF-8 first
-                with open(file["file_path"], "r", encoding="utf-8") as f:
-                    content = f.read()
-            except UnicodeDecodeError:
-                # Fall back to latin-1 if UTF-8 fails
-                with open(file["file_path"], "r", encoding="latin-1") as f:
-                    content = f.read()
+        file = await db.files.find_one({"_id": ObjectId(file_id)})
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
 
-            return FileContentResponse(
-                file_id=file_id,
-                file_name=file["file_name"],
-                content=content,
-                size=file["size"],
-                content_type=file["content_type"]
-            )
-        else:
+        # Read file content
+        if not os.path.exists(file["file_path"]):
             raise HTTPException(status_code=404, detail="File content not found")
+            
+        try:
+            # Try UTF-8 first
+            with open(file["file_path"], "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            # Fall back to latin-1 if UTF-8 fails
+            with open(file["file_path"], "r", encoding="latin-1") as f:
+                content = f.read()
+
+        return create_document_model(FileContentResponse, {
+            "file_id": file_id,
+            "file_name": file["file_name"],
+            "content": content,
+            "size": file["size"],
+            "content_type": file["content_type"],
+        })
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
+        logger.error(f"Error reading file content: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Error reading file content: {str(e)}"
         )
 
 async def delete_file(file_id: str, db=Depends(get_db)):
-    """Delete a file."""
+    """Delete a file with transaction support."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
+    # Get file details before deletion (outside transaction)
     file = await db.files.find_one({"_id": ObjectId(file_id)})
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-
-    # Delete the file from disk
-    if os.path.exists(file["file_path"]):
-        try:
-            os.remove(file["file_path"])
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error deleting file from disk: {str(e)}"
-            )
-
-    # Delete from database
-    result = await db.files.delete_one({"_id": ObjectId(file_id)})
-
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=500, detail="Failed to delete file from database"
+        
+    # Remember file data for response and cleanup
+    file_path = file.get("file_path")
+    file_name = file.get("file_name")
+    project_id = file.get("project_id")
+    
+    try:
+        # Use transaction for database operations with fallback
+        async with get_transaction_session(f"Delete file {file_id}") as session:
+            if session:
+                # With transaction
+                # Delete the file document from database
+                result = await db.files.delete_one(
+                    {"_id": ObjectId(file_id)},
+                    session=session
+                )
+                
+                if result.deleted_count == 0:
+                    raise HTTPException(
+                        status_code=500, detail="Failed to delete file from database"
+                    )
+                    
+                # Update project stats in the same transaction
+                if project_id:
+                    await db.projects.update_one(
+                        {"_id": project_id},
+                        {
+                            "$inc": {"file_count": -1},
+                            "$set": {"updated_at": datetime.now(timezone.utc)}
+                        },
+                        session=session
+                    )
+            else:
+                # Without transaction - operations are not atomic
+                # Delete the file document from database
+                result = await db.files.delete_one(
+                    {"_id": ObjectId(file_id)}
+                )
+                
+                if result.deleted_count == 0:
+                    raise HTTPException(
+                        status_code=500, detail="Failed to delete file from database"
+                    )
+                    
+                # Update project stats as a separate operation
+                if project_id:
+                    await db.projects.update_one(
+                        {"_id": project_id},
+                        {
+                            "$inc": {"file_count": -1},
+                            "$set": {"updated_at": datetime.now(timezone.utc)}
+                        }
+                    )
+        
+        # After successful database transaction, delete the file from disk
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Deleted file from disk: {file_path}")
+            except Exception as e:
+                logger.error(f"Error deleting file from disk: {str(e)}")
+                # Continue with success response even if file delete fails
+                # since the database operation succeeded
+        
+        logger.info(f"Successfully deleted file {file_name} (ID: {file_id})")
+        return FileBasicResponse(
+            success=True,
+            message=f"File {file_name} deleted successfully",
+            file_id=file_id
         )
-
-    return FileBasicResponse(
-        success=True,
-        message=f"File {file['file_name']} deleted successfully",
-        file_id=file_id
-    )
+            
+    except Exception as e:
+        logger.error(f"Error deleting file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
 
 
 async def set_file_exclusions(
@@ -434,36 +561,70 @@ async def set_file_exclusions(
 ):
     """
     Set classes and functions to exclude from documentation for a specific file.
-
-    Args:
-        file_id: The ID of the file
-        exclusions: Exclusion settings
-        db: Database connection
+    Uses transactions for consistency.
     """
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
-    # Check if file exists
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    if exclusions is None:
+        raise HTTPException(status_code=400, detail="Exclusions object cannot be null")
+    
+    try:
+        # Use transaction for updating exclusions with fallback
+        async with get_transaction_session(f"Update file exclusions for {file_id}") as session:
+            if session:
+                # With transaction
+                # Check if file exists within transaction
+                file = await db.files.find_one({"_id": ObjectId(file_id)}, session=session)
+                if not file:
+                    raise HTTPException(status_code=404, detail="File not found")
 
-    # Update exclusions
-    await db.files.update_one(
-        {"_id": ObjectId(file_id)},
-        {
-            "$set": {
-                "excluded_classes": exclusions.excluded_classes,
-                "excluded_functions": exclusions.excluded_functions,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
-    )
+                # Update exclusions within transaction
+                result = await db.files.update_one(
+                    {"_id": ObjectId(file_id)},
+                    {
+                        "$set": {
+                            "excluded_classes": exclusions.excluded_classes,
+                            "excluded_functions": exclusions.excluded_functions,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                    session=session
+                )
+            else:
+                # Without transaction
+                # Check if file exists
+                file = await db.files.find_one({"_id": ObjectId(file_id)})
+                if not file:
+                    raise HTTPException(status_code=404, detail="File not found")
 
-    return ExclusionResponse(
-        success=True,
-        message="Exclusions updated successfully",
-    )
+                # Update exclusions as a separate operation
+                result = await db.files.update_one(
+                    {"_id": ObjectId(file_id)},
+                    {
+                        "$set": {
+                            "excluded_classes": exclusions.excluded_classes,
+                            "excluded_functions": exclusions.excluded_functions,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    }
+                )
+            
+            if result.modified_count == 0:
+                logger.warning(f"No changes made to exclusions for file {file_id}")
+                
+        logger.info(f"Updated exclusions for file {file_id}")
+        return ExclusionResponse(
+            success=True,
+            message="Exclusions updated successfully",
+        )
+    
+    except HTTPException as http_ex:
+        # Re-raise HTTP exceptions directly
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error setting file exclusions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating exclusions: {str(e)}")
 
 async def get_file_exclusions(file_id: str, db=Depends(get_db)):
     """
@@ -476,13 +637,19 @@ async def get_file_exclusions(file_id: str, db=Depends(get_db)):
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
-    file = await db.files.find_one({"_id": ObjectId(file_id)})
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        file = await db.files.find_one({"_id": ObjectId(file_id)})
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
 
-    return FileExclusions(
-        file_id=str(file["_id"]),
-        excluded_classes=file.get("excluded_classes", []),
-        excluded_functions=file.get("excluded_functions", []),
-    )
+        return FileExclusions(
+            file_id=str(file["_id"]),
+            excluded_classes=file.get("excluded_classes", []),
+            excluded_functions=file.get("excluded_functions", []),
+        )
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error retrieving file exclusions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving file exclusions: {str(e)}")
 

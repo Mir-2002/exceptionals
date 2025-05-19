@@ -1,5 +1,7 @@
-from typing import Any
+from typing import Any, ClassVar
 from bson import ObjectId
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 class PyObjectId(ObjectId):
     """Custom type for handling MongoDB ObjectId fields with Pydantic."""
@@ -10,26 +12,25 @@ class PyObjectId(ObjectId):
     
     @classmethod
     def validate(cls, v):
-        if not ObjectId.is_valid(v):
-            raise ValueError("Invalid ObjectId")
-        return ObjectId(v)
+        if isinstance(v, ObjectId):
+            return v
+        if isinstance(v, str):
+            if ObjectId.is_valid(v):
+                return ObjectId(v)
+        raise ValueError(f"Invalid ObjectId: {v}")
     
     @classmethod
     def __get_pydantic_core_schema__(
         cls, 
         _source_type: Any, 
-        _handler: Any
-    ) -> Any:
+        _handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
         """Define how to generate the schema for this type."""
-        from pydantic_core import core_schema
-        # Use only the pattern parameter
-        return core_schema.str_schema(
-            pattern="^[a-f0-9]{24}$"
-        )
+        # Simpler schema definition
+        return core_schema.union_schema([
+            core_schema.is_instance_schema(ObjectId),
+            core_schema.str_schema()
+        ])
     
-    # For JSON serialization
     def __str__(self):
         return str(super())
-    
-    def __repr__(self):
-        return f"PyObjectId({super().__repr__()})"
