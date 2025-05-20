@@ -1,52 +1,79 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { projectsAPI } from '../../../shared/services/api';
+import { notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
+import { toast } from 'react-toastify';
 
 const Dashboard = () => {
   const [projects, setProjects] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
-  
+
   useEffect(() => {
-    // In development, use mock data
     const fetchProjects = async () => {
-      setIsLoading(true);
+      const toastId = notifyLoading('Loading your projects...');
+      
       try {
-        if (import.meta.env.DEV) {
-          // Mock data
-          const mockProjects = [
-            { id: '1', name: 'Python Data Analysis', dateCreated: '2023-05-10', status: 'complete', fileCount: 12 },
-            { id: '2', name: 'Machine Learning API', dateCreated: '2023-05-08', status: 'processing', fileCount: 25 },
-            { id: '3', name: 'Flask Web Server', dateCreated: '2023-05-05', status: 'complete', fileCount: 8 },
-            { id: '4', name: 'Django Project', dateCreated: '2023-05-01', status: 'complete', fileCount: 32 },
-            { id: '5', name: 'Data Visualization', dateCreated: '2023-04-28', status: 'failed', fileCount: 5 },
-          ];
-          setTimeout(() => {
-            setProjects(mockProjects);
-            setIsLoading(false);
-          }, 800); // Simulate loading delay
+        setLoading(true);
+        const response = await projectsAPI.getAllProjects();
+        setProjects(response.data);
+        
+        // Only show success message if there are projects
+        if (response.data.length > 0) {
+          updateToast(toastId, 'success', `Loaded ${response.data.length} projects`);
         } else {
-          // Real API call
-          const response = await fetch('/api/projects');
-          const data = await response.json();
-          setProjects(data);
-          setIsLoading(false);
+          // Just dismiss the toast without showing "Loaded 0 projects"
+          toast.dismiss(toastId);
         }
       } catch (error) {
-        console.error('Error fetching projects:', error);
-        setIsLoading(false);
+        handleApiError(error, {
+          defaultMessage: 'Failed to load projects',
+          showToast: false
+        });
+        updateToast(toastId, 'error', 'Failed to load projects');
+      } finally {
+        setLoading(false);
       }
     };
     
     fetchProjects();
   }, []);
-  
+
   // Filter and search projects
   const filteredProjects = projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter = filter === 'all' || project.status === filter;
     return matchesSearch && matchesFilter;
   });
+
+  const handleDeleteProject = async (id, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (!confirm('Are you sure you want to delete this project?')) {
+      return;
+    }
+    
+    const toastId = notifyLoading('Deleting project...');
+    
+    try {
+      await projectsAPI.deleteProject(id);
+      
+      // Update projects list
+      setProjects(projects.filter(project => project.id !== id));
+      
+      updateToast(toastId, 'success', 'Project deleted successfully');
+    } catch (error) {
+      handleApiError(error, {
+        defaultMessage: 'Failed to delete project',
+        showToast: false
+      });
+      updateToast(toastId, 'error', 'Failed to delete project');
+    }
+  };
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -64,6 +91,14 @@ const Dashboard = () => {
           Upload
         </Link>
       </div>
+      
+      {/* Dev mode notification */}
+      {import.meta.env.DEV && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 p-4 rounded-md mb-6">
+          <p className="font-medium">Development Mode</p>
+          <p>Showing sample projects. Connect to backend for real data.</p>
+        </div>
+      )}
       
       {/* Search and filter */}
       <div className="flex flex-col md:flex-row gap-4 mb-6">
@@ -92,19 +127,23 @@ const Dashboard = () => {
       </div>
       
       {/* Projects list */}
-      {isLoading ? (
+      {loading ? (
         <div className="flex justify-center items-center py-20">
           <svg className="animate-spin h-8 w-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
         </div>
+      ) : error ? (
+        <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-md mb-4">
+          {error}
+        </div>
       ) : filteredProjects.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredProjects.map((project) => (
             <Link 
               key={project.id} 
-              to={`/projects/${project.id}`}
+              to={`/project/${project.id}`}
               className="block border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition-shadow bg-white"
             >
               <div className="p-6">
@@ -144,25 +183,13 @@ const Dashboard = () => {
           ))}
         </div>
       ) : (
-        <div className="text-center py-12 bg-gray-50 rounded-lg">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-          </svg>
-          <h3 className="mt-2 text-lg font-medium text-gray-900">No projects found</h3>
-          <p className="mt-1 text-gray-500">Try adjusting your search or filter, or create a new project.</p>
-          
-          {/* Add yellow upload button to empty state */}
-          <Link 
-            to="/upload-selection"
-            className="mt-4 inline-block bg-yellow-400 hover:bg-yellow-500 text-sky-800 font-medium px-6 py-2 rounded-lg transition-all"
-          >
-            Upload Your First Project
-          </Link>
+        <div className="text-center py-10">
+          {/* Empty state with no content */}
         </div>
       )}
       
       {/* Empty state when no projects exist */}
-      {!isLoading && projects.length === 0 && (
+      {!loading && projects.length === 0 && (
         <div className="text-center py-16 bg-gray-50 rounded-lg">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
