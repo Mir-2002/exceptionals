@@ -6,9 +6,13 @@ const Header = () => {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/');
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/');
+    } catch (error) {
+      console.error('Failed to log out', error);
+    }
   };
 
   return (
@@ -37,12 +41,12 @@ const Header = () => {
             
             {!currentUser ? (
               <>
-                <li><Link to="/login">Log In</Link></li>
-                <li><Link to="/register" className="...">Sign Up</Link></li>
+                <li><Link to="/login" className="hover:text-gray-200 transition-colors">Log In</Link></li>
+                <li><Link to="/register" className="bg-yellow-400 text-sky-700 px-3 py-1 rounded-lg hover:bg-yellow-500">Sign Up</Link></li>
               </>
             ) : (
               <li>
-                <button onClick={handleLogout} className="...">Logout</button>
+                <button onClick={handleLogout} className="hover:text-gray-200 transition-colors">Logout</button>
               </li>
             )}
           </ul>

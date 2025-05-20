@@ -1,7 +1,7 @@
 import React, { useState, useRef } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { uploadFile, mockUploadFile } from '../../../shared/services/api';
+import { filesAPI, projectsAPI } from '../../../shared/services/api';
 
 const FileUpload = () => {
   const navigate = useNavigate();
@@ -75,26 +75,32 @@ const FileUpload = () => {
     setIsUploading(true);
 
     try {
-      // Use a feature flag or environment variable to decide which implementation to use
-      const isDevelopment = import.meta.env.DEV;
-      let response;
+      // Create a new project first
+      const projectResponse = await projectsAPI.createProject({ 
+        name: projectName 
+      });
       
-      if (isDevelopment) {
-        // Use mock implementation during development
-        response = await mockUploadFile(selectedFile, projectName, skipItems);
-      } else {
-        // Use real API in production
-        response = await uploadFile(selectedFile, projectName, skipItems);
-      }
+      const projectId = projectResponse.data.id;
+      setProcessingProgress(30);
+      
+      // Then upload the file to that project
+      const uploadResponse = await filesAPI.uploadFile(
+        projectId, 
+        selectedFile,
+        (progress) => {
+          // Update progress based on upload status
+          setProcessingProgress(30 + Math.round(progress * 0.5));
+        }
+      );
       
       setProcessingProgress(100);
       setProcessingStep(3);
       
-      // Store project ID or other data from response if needed
-      localStorage.setItem('lastProjectId', response.data.id);
+      // Store project ID for later use
+      localStorage.setItem('lastProjectId', projectId);
     } catch (error) {
       console.error("Error uploading file:", error);
-      setFileError("Error uploading file. Please try again.");
+      setFileError("Error uploading file: " + (error.response?.data?.message || "Please try again."));
       setProcessingStep(1);
     } finally {
       setIsUploading(false);

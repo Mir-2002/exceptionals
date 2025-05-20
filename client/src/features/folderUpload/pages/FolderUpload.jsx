@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { uploadFolder, mockUploadFolder } from '../../../shared/services/api';
+import { filesAPI, projectsAPI } from '../../../shared/services/api';
 
 const FolderUpload = () => {
   const navigate = useNavigate();
@@ -89,60 +89,46 @@ const FolderUpload = () => {
     setProcessingStep(2);
   };
 
-  const handleFolderUpload = async (e) => {
-    e.preventDefault();
-    
-    setProcessingStep(3);
+  const handleFolderUpload = async () => {
+    setProcessingStep(2);
     setProcessingProgress(10);
     setIsUploading(true);
-    
-    // Get only the selected files
-    const filesToUpload = selectedFiles.filter(file => file.selected);
-    
-    // Collect the actual file objects based on selected paths
-    const fileObjects = Array.from(folderInputRef.current.files);
-    const selectedFileObjects = [];
-    
-    for (const selectedFile of filesToUpload) {
-      const fileObj = fileObjects.find(f => f.webkitRelativePath === selectedFile.path);
-      if (fileObj) {
-        selectedFileObjects.push(fileObj);
-      }
-    }
-
+  
     try {
-      // Start progress simulation
-      const progressInterval = setInterval(() => {
-        setProcessingProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(progressInterval);
-            return 90;
-          }
-          return prev + 10;
-        });
-      }, 500);
+      // Create a new project first
+      const projectResponse = await projectsAPI.createProject({ 
+        name: projectName 
+      });
       
-      // Use feature flag to determine whether to use mock or real API
-      const isDevelopment = import.meta.env.DEV;
-      let response;
+      const projectId = projectResponse.data.id;
+      setProcessingProgress(30);
       
-      if (isDevelopment) {
-        // Use mock implementation during development
-        response = await mockUploadFolder(selectedFileObjects, projectName, skipItems);
-      } else {
-        // Use real API in production
-        response = await uploadFolder(selectedFileObjects, projectName, skipItems);
+      // Prepare files for upload
+      const formData = new FormData();
+      
+      // Add all files from the folder
+      for (const file of selectedFiles) {
+        formData.append('files', file);
       }
       
-      clearInterval(progressInterval);
-      setProcessingProgress(100);
-      setProcessingStep(4);
+      // Use ZIP file upload since we're dealing with multiple files
+      const uploadResponse = await filesAPI.uploadZipFile(
+        projectId, 
+        formData,
+        (progress) => {
+          // Update progress based on upload status
+          setProcessingProgress(30 + Math.round(progress * 0.5));
+        }
+      );
       
-      // Store project ID or other data from response if needed
-      localStorage.setItem('lastProjectId', response.data.id);
+      setProcessingProgress(100);
+      setProcessingStep(3);
+      
+      // Store project ID for later use
+      localStorage.setItem('lastProjectId', projectId);
     } catch (error) {
       console.error("Error uploading folder:", error);
-      setUploadError("Error uploading project folder. Please try again.");
+      setFolderError("Error uploading folder: " + (error.response?.data?.message || "Please try again."));
       setProcessingStep(1);
     } finally {
       setIsUploading(false);
