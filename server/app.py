@@ -5,6 +5,7 @@ from utils.db import db
 from view.UserView import router as user_router
 from view.ProjectView import router as project_router
 from view.FileView import router as file_router
+from view.AuthView import router as auth_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,6 +38,7 @@ app.add_middleware(
 async def root():
     return {"message": "Welcome to the Automatic Python Documentation Generator API!"}
 
+app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(user_router, prefix="/api", tags=["users"])
 app.include_router(project_router, prefix="/api", tags=["projects"])
 app.include_router(file_router, prefix="/api", tags=["files"])

@@ -1,33 +1,31 @@
-import os
-from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Query, UploadFile
-
 from controller.ProjectController import create, get, remove, update, get_project_structure, set_project_exclusions, get_project_exclusions, upload_project_zip
 from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
-from model.File import ExclusionResponse, ProjectExclusions, ZipUploadResponseModel
+from model.File import ProjectExclusions, ZipUploadResponseModel
 from utils.db import get_db
+from utils.auth import get_current_user, verify_project_owner
 
 
 router = APIRouter()
 
 @router.post("/projects", response_model=ProjectResponseModel)
-async def create_project(project: ProjectModel, db=Depends(get_db)):
+async def create_project(project: ProjectModel, current_user = Depends(get_current_user),db=Depends(get_db)):
     return await create(project, db)
 
 @router.get("/projects/{project_id}", response_model=ProjectResponseModel)
-async def get_project(project_id: str, db=Depends(get_db)):
+async def get_project(project_id: str, current_user = Depends(get_current_user),db=Depends(get_db)):
     return await get(project_id, db)
 
 @router.patch("/projects/{project_id}", response_model=ProjectUpdateResponseModel)
-async def update_project(project_id: str, project: ProjectUpdateModel, db=Depends(get_db)):
+async def update_project(project_id: str, project: ProjectUpdateModel, project_data = Depends(verify_project_owner),db=Depends(get_db)):
     return await update(project_id, project, db)
 
 @router.delete("/projects/{project_id}", response_model=ProjectDeleteResponseModel)
-async def delete_project(project_id: str, db=Depends(get_db)):
+async def delete_project(project_id: str, project_data = Depends(verify_project_owner),db=Depends(get_db)):
     return await remove(project_id, db)
 
 @router.get("/projects/{project_id}/structure", response_model=ProjectStructureResponseModel)
-async def get_structure_for_project(project_id: str, use_default_exclusions: bool = Query(True, description="Apply default exclusions to common files/folders"),db=Depends(get_db)):
+async def get_structure_for_project(project_id: str, use_default_exclusions: bool = Query(True, description="Apply default exclusions to common files/folders"),project_data = Depends(verify_project_owner),db=Depends(get_db)):
     """
     Get the folder structure of a project.
     
@@ -41,6 +39,7 @@ async def get_structure_for_project(project_id: str, use_default_exclusions: boo
 async def update_project_exclusions(
     project_id: str,
     exclusions: ProjectExclusions,
+    project_data = Depends(verify_project_owner),
     db=Depends(get_db)
 ):
     """
@@ -52,6 +51,7 @@ async def update_project_exclusions(
 async def upload_project_zip_file(
     project_id: str,
     zip_file: UploadFile = File(...),
+    project_data = Depends(verify_project_owner),
     db=Depends(get_db)
 ):
     """
@@ -62,7 +62,7 @@ async def upload_project_zip_file(
     return await upload_project_zip(project_id, zip_file, db)
 
 @router.get("/projects/{project_id}/exclusions", response_model=ProjectExclusions)
-async def retrieve_project_exclusions(project_id: str, db=Depends(get_db)):
+async def retrieve_project_exclusions(project_id: str, project_data = Depends(verify_project_owner),db=Depends(get_db)):
     """
     Get the current exclusions for a project.
     """
