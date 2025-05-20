@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { useAuth } from "../../../shared/contexts/AuthContext";
+import { notifyError, notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
 
 const Input = ({ type, name, id, label, value, onChange, required }) => {
   return (
@@ -124,51 +126,31 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
+    // Basic validation
+    if (!email || !password) {
+      notifyError('Please enter both email and password');
+      return;
+    }
+    
+    const toastId = notifyLoading('Signing in...');
+    
     try {
       setLoading(true);
-      setError("");
+      await login({ email, password });
+      updateToast(toastId, 'success', 'Logged in successfully!');
       
-      // In development mode, use mock authentication
-      if (import.meta.env.DEV) {
-        // Get email from form
-        const email = formData.email;
-        
-        // Create mock user from email
-        const user = {
-          id: 'user-1',
-          username: email.split('@')[0], // Extract username from email
-          email: email
-        };
-        
-        // Store user in localStorage
-        localStorage.setItem('user', JSON.stringify(user));
-        localStorage.setItem('token', 'mock-token-' + Math.random().toString(36).substring(2));
-        
-        // Redirect to dashboard after short delay
-        setTimeout(() => {
-          navigate('/dashboard');
-        }, 500);
-      } else {
-        // In production, use the real API
-        const response = await axios.post(
-          `${import.meta.env.VITE_API_ENDPOINT}/api/auth/login`, 
-          formData
-        );
-        
-        if (response.data && response.data.user) {
-          // Store user in localStorage
-          localStorage.setItem('user', JSON.stringify(response.data.user));
-          localStorage.setItem('token', response.data.token);
-          
-          // Navigate to dashboard
-          navigate('/dashboard');
-        } else {
-          setError("Login failed");
-        }
-      }
+      // Redirect to dashboard after successful login
+      setTimeout(() => {
+        navigate('/dashboard');
+      }, 1000);
     } catch (error) {
-      console.error("Error during login:", error);
-      setError("Invalid email or password");
+      handleApiError(error, {
+        defaultMessage: 'Login failed. Please check your credentials.',
+        showToast: false
+      });
+      
+      updateToast(toastId, 'error', 
+        error.response?.data?.message || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }

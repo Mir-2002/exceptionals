@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
-import * as mockAuthService from "../../../shared/services/mockAuth";
+import { notifyError, notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
 
 const Register = () => {
   const [formData, setFormData] = useState({
@@ -26,16 +27,6 @@ const Register = () => {
   const location = useLocation();
   
   useEffect(() => {
-    // Check for GitHub OAuth code
-    const params = new URLSearchParams(location.search);
-    const code = params.get("code");
-    
-    if (code) {
-      handleGitHubCallback(code);
-    }
-  }, [location]);
-  
-  useEffect(() => {
     const password = formData.password;
     
     setPasswordRequirements({
@@ -45,42 +36,6 @@ const Register = () => {
       hasUppercase: /[A-Z]/.test(password),
     });
   }, [formData.password]);
-  
-  const handleGitHubCallback = async (code) => {
-    try {
-      setLoading(true);
-      setError("");
-      
-      // Check if we're in development mode
-      const isDevelopment = import.meta.env.DEV;
-      
-      if (isDevelopment) {
-        // Use mock GitHub auth
-        const result = await mockAuthService.githubLogin(code);
-        localStorage.setItem('user', JSON.stringify(result.user));
-        localStorage.setItem('token', result.token);
-        navigate('/dashboard');
-      } else {
-        // Use real API in production
-        const response = await axios.post(
-          `${import.meta.env.VITE_API_ENDPOINT}/api/auth/github/callback`,
-          { code, registration: true }
-        );
-        
-        if (response.data && response.data.user) {
-          localStorage.setItem('user', JSON.stringify(response.data.user));
-          navigate('/dashboard');
-        } else {
-          setError("GitHub registration failed");
-        }
-      }
-    } catch (error) {
-      console.error("GitHub auth error:", error);
-      setError("Failed to register with GitHub");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -115,33 +70,47 @@ const Register = () => {
       return;
     }
     
+    // Add password requirements validation
+    if (formData.password.length < 8) {
+      notifyError('Password must be at least 8 characters');
+      return;
+    }
+    
+    // Check for at least one uppercase, one lowercase and one number
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/;
+    if (!passwordRegex.test(formData.password)) {
+      notifyError('Password must contain at least one uppercase letter, one lowercase letter, and one number');
+      return;
+    }
+    
+    const toastId = notifyLoading('Creating your account...');
+    
     try {
       setLoading(true);
-      setError('');
+      await authAPI.register(formData);
       
-      // When in development, use mock auth
-      if (import.meta.env.DEV) {
-        // In development, always succeed and redirect to login
-        navigate('/login?registration=success');
-      } else {
-        // In production, use the real API
-        // Your existing production code here...
-      }
+      updateToast(toastId, 'success', 'Account created successfully!');
+      
+      // Redirect to login
+      setTimeout(() => {
+        navigate('/login');
+      }, 1500);
     } catch (error) {
-      console.error('Registration error:', error);
-      setError('Registration failed. Please try again.');
+      handleApiError(error, {
+        defaultMessage: 'Failed to create account',
+        showToast: false
+      });
+      updateToast(toastId, 'error', 
+        error.response?.data?.message || 'Failed to create account');
     } finally {
       setLoading(false);
     }
   };
   
+  // Update GitHub register function for future implementation
   const handleGitHubRegister = () => {
-    // GitHub OAuth URL for registration flow
-    const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
-    const redirectUri = `${window.location.origin}/register`; // Different URI for registration flow
-    const githubUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=user:email`;
-    
-    window.location.href = githubUrl;
+    setError("GitHub authentication waiting for backend integration");
+    // Will be implemented when backend is ready
   };
 
   const PasswordRequirement = ({ met, text }) => (
@@ -288,7 +257,12 @@ const Register = () => {
           )}
         </div>
         
-        {error && <p className="text-red-500">{error}</p>}
+        {error && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 rounded-md w-3/4 text-center">
+            {error}
+          </div>
+        )}
+        
         <button
           type="submit"
           className="bg-yellow-400 text-sky-700 w-1/3 p-2 rounded-lg
