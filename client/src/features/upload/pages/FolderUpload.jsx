@@ -68,7 +68,7 @@ const FolderUpload = () => {
       
       // Navigate to the new project after a short delay
       setTimeout(() => {
-        navigate(`/projects/${result.id}`);
+        navigate(`/project/${result.id}`);
       }, 2000);
       
     } catch (error) {

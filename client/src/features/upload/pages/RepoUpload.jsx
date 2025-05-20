@@ -1,17 +1,22 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { uploadGitHubRepo } from '../../../shared/services/api';
-import { useAuth } from '../../../shared/contexts/AuthContext';
+import { projectsAPI, filesAPI } from '../../../shared/services/api';
+import { notifyWarning, notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
 
 const RepoUpload = () => {
   const [repoUrl, setRepoUrl] = useState('');
   const [projectName, setProjectName] = useState('');
   const [branch, setBranch] = useState('main');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+
+  const validateGitHubUrl = (url) => {
+    // Basic GitHub URL validation
+    const githubRegex = /^https:\/\/github\.com\/[\w-]+\/[\w.-]+$/i;
+    return githubRegex.test(url);
+  };
 
   const handleRepoUrlChange = (e) => {
     const url = e.target.value;
@@ -38,45 +43,77 @@ const RepoUpload = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!repoUrl.trim()) {
-      setError('Please enter a GitHub repository URL');
+    if (!projectName.trim()) {
+      notifyWarning('Please enter a project name');
       return;
     }
     
-    if (!projectName.trim()) {
-      setError('Please enter a project name');
+    if (!repoUrl.trim()) {
+      notifyWarning('Please enter a GitHub repository URL');
       return;
     }
+    
+    if (!validateGitHubUrl(repoUrl)) {
+      notifyWarning('Please enter a valid GitHub repository URL');
+      return;
+    }
+    
+    const toastId = notifyLoading('Creating project...');
     
     try {
-      setLoading(true);
-      setError('');
-      setSuccess('');
+      setUploading(true);
       
-      // Import GitHub repo
-      const result = await uploadGitHubRepo(
+      // Create project
+      const projectResponse = await projectsAPI.createProject({
+        name: projectName,
+        description: `GitHub repository: ${repoUrl}`,
+        type: 'repository',
         repoUrl,
-        projectName,
         branch
-      );
+      });
       
-      setSuccess(`Repository imported successfully! Project ID: ${result.id}`);
+      const projectId = projectResponse.data.id;
       
-      // Reset form
-      setRepoUrl('');
-      setProjectName('');
-      setBranch('main');
+      updateToast(toastId, 'info', 'Project created. Cloning repository...');
       
-      // Navigate to the new project after a short delay
+      // Update progress
+      setProgress(25);
+      
+      // Simulate repository cloning and processing
+      if (import.meta.env.DEV) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setProgress(50);
+        
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setProgress(75);
+        
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setProgress(100);
+      } else {
+        // Real API call to process repo
+        await filesAPI.processRepository(projectId, { 
+          url: repoUrl, 
+          branch,
+          onProgress: (progress) => setProgress(progress)
+        });
+      }
+      
+      updateToast(toastId, 'success', 'Repository processed successfully!');
+      
+      // Navigate to project page
       setTimeout(() => {
-        navigate(`/projects/${result.id}`);
-      }, 2000);
+        navigate(`/project/${projectId}`);
+      }, 1000);
       
     } catch (error) {
-      console.error('GitHub import error:', error);
-      setError(error.message || 'Failed to import GitHub repository');
+      handleApiError(error, {
+        defaultMessage: 'Failed to process repository',
+        showToast: false
+      });
+      updateToast(toastId, 'error', 
+        error.response?.data?.message || 'Failed to process repository');
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 

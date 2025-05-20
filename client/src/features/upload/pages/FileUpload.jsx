@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { uploadFileWithProgress } from '../../../shared/services/api';
+import { filesAPI, projectsAPI } from '../../../shared/services/api';
+import { notifyWarning, notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
 import { useAuth } from '../../../shared/contexts/AuthContext';
 
 const FileUpload = () => {
@@ -53,46 +55,54 @@ const FileUpload = () => {
     e.preventDefault();
     
     if (!file) {
-      setError('Please select a file to upload');
+      notifyWarning('Please select a file to upload');
       return;
     }
     
     if (!projectName.trim()) {
-      setError('Please enter a project name');
+      notifyWarning('Please enter a project name');
       return;
     }
+
+    const toastId = notifyLoading('Creating project...');
     
     try {
       setUploading(true);
-      setError('');
-      setSuccess('');
-      setUploadProgress(0);
       
-      // Start upload with progress tracking
-      const result = await uploadFileWithProgress(
+      // Create project
+      const projectResponse = await projectsAPI.createProject({
+        name: projectName,
+        description: `Uploaded file: ${file.name}`,
+        type: 'file'
+      });
+      
+      const projectId = projectResponse.data.id;
+      
+      updateToast(toastId, 'info', 'Project created. Uploading file...');
+      
+      // Upload file with progress callback
+      await filesAPI.uploadFile(
+        projectId, 
         file, 
-        projectName, 
-        [], // skip items
-        (progress) => setUploadProgress(progress)
+        (progress) => {
+          setUploadProgress(progress);
+        }
       );
       
-      setSuccess(`File uploaded successfully! Project ID: ${result.id}`);
+      updateToast(toastId, 'success', 'File uploaded successfully!');
       
-      // Reset form
-      setFile(null);
-      setProjectName('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      
-      // Navigate to the new project after a short delay
+      // Navigate to project page
       setTimeout(() => {
-        navigate(`/projects/${result.id}`);
-      }, 2000);
+        navigate(`/project/${projectId}`);
+      }, 1000);
       
     } catch (error) {
-      console.error('Upload error:', error);
-      setError(error.message || 'Failed to upload file');
+      handleApiError(error, {
+        defaultMessage: 'Failed to upload file. Please try again.',
+        showToast: false
+      });
+      updateToast(toastId, 'error', 
+        error.response?.data?.message || 'Failed to upload file. Please try again.');
     } finally {
       setUploading(false);
     }
