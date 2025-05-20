@@ -4,7 +4,7 @@ import { projectsAPI, docsAPI } from '../../../shared/services/api';
 import { notifyLoading, updateToast } from '../../../shared/utils/toast';
 import { handleApiError } from '../../../shared/utils/errorHandler';
 import SyntaxHighlighter from 'react-syntax-highlighter';
-import { docco } from 'react-syntax-highlighter/dist/esm/styles/hljs';
+import { docco } from 'react-syntax-highlighter/dist/cjs/styles/hljs';
 
 const DocumentationViewer = () => {
   const { id: projectId } = useParams();

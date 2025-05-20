@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter as Router, Route, Routes, Navigate } from "react-router-dom";
 
 // Layout component
 import Layout from "./shared/components/Layout";
@@ -26,8 +26,8 @@ import GitHubCallback from './features/auth/pages/GitHubCallback';
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <Router>
+      <AuthProvider>
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Home />} />
@@ -47,8 +47,8 @@ function App() {
             <Route path="/auth/github/callback" element={<GitHubCallback />} />
           </Route>
         </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </Router>
   );
 }
 

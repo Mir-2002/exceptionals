@@ -42,6 +42,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
@@ -136,7 +137,7 @@ const Login = () => {
     
     try {
       setLoading(true);
-      await login({ email, password });
+      await login({ email, password, rememberMe });
       updateToast(toastId, 'success', 'Logged in successfully!');
       
       // Redirect to dashboard after successful login
@@ -220,9 +221,30 @@ const Login = () => {
               )}
             </button>
           </div>
-          <a href="#" className="text-sm text-blue-600 hover:underline">Forgot Password?</a>
         </div>
         
+        <div className="flex items-center justify-between mt-4 w-3/4">
+          <div className="flex items-center">
+            <input
+              id="remember-me"
+              name="remember-me"
+              type="checkbox"
+              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+            />
+            <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900">
+              Remember me
+            </label>
+          </div>
+          
+          <div className="text-sm">
+            <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
+              Forgot your password?
+            </a>
+          </div>
+        </div>
+
         {error && <p className="text-red-500">{error}</p>}
         <button
           type="submit"

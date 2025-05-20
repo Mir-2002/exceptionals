@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { projectsAPI } from '../../../shared/services/api';
+import { projectsAPI, filesAPI } from '../../../shared/services/api';
+import { notifyWarning, notifyLoading, updateToast } from '../../../shared/utils/toast';
+import { handleApiError } from '../../../shared/utils/errorHandler';
+
 
 const RepoUpload = () => {
   const [repoUrl, setRepoUrl] = useState('');
@@ -10,7 +13,21 @@ const RepoUpload = () => {
   const [error, setError] = useState('');
   const [processingStep, setProcessingStep] = useState(1);
   const [processingProgress, setProcessingProgress] = useState(0);
+  const [skipItems, setSkipItems] = useState([]);
+  const [inputValue, setInputValue] = useState('');
   const navigate = useNavigate();
+
+  const handleAddItem = (e) => {
+    e.preventDefault();
+    if (inputValue.trim()) {
+      setSkipItems([...skipItems, inputValue.trim()]);
+      setInputValue("");
+    }
+  };
+
+  const handleRemoveItem = (item) => {
+    setSkipItems(skipItems.filter(skipItem => skipItem !== item));
+  };
 
   const validateGitHubUrl = (url) => {
     // Simple GitHub URL validation
@@ -44,7 +61,8 @@ const RepoUpload = () => {
           type: 'github',
           url: repoUrl,
           branch: branch
-        }
+        },
+        skipItems: skipItems // Add the skip items to the project data
       };
       
       // In development, we'll simulate the API call
@@ -94,18 +112,6 @@ const RepoUpload = () => {
 
   return (
     <>
-      <header className="w-full p-6 bg-white shadow-sm">
-        <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-sky-800">GitHub Repository Analysis</h1>
-          <button 
-            onClick={() => navigate('/upload-selection')} 
-            className="px-4 py-2 text-sky-700 hover:underline"
-          >
-            Back to Upload Selection
-          </button>
-        </div>
-      </header>
-      
       <main className="flex flex-col md:flex-row w-full h-full font-funnel-sans">
         <section className="flex flex-col items-center justify-center w-full md:w-1/2 h-full p-10 md:p-20">
           <div className="w-full max-w-md">

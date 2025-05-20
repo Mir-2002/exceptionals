@@ -1,106 +1,258 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import { authAPI } from '../services/api';
+import { jwtDecode }  from 'jwt-decode';
 
-// Create the auth context
-export const AuthContext = createContext(null);
+// Create auth context
+const AuthContext = createContext(null);
 
-// Custom hook to use auth context
-export const useAuth = () => useContext(AuthContext);
+// Custom hook for using auth context
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
 
-// AuthProvider component
-export const AuthProvider = ({ children }) => {
-  // Define state inside the component body
-  const [currentUser, setCurrentUser] = useState(null);
+// Auth Provider component
+export function AuthProvider(props) {
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [tokenExpiryTime, setTokenExpiryTime] = useState(null);
 
-  // Effect to check if user is already logged in
+  // Function to check if token is expired
+  const isTokenExpired = useCallback(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return true;
+    
+    try {
+      const decoded = jwtDecode(token);
+      const currentTime = Date.now() / 1000;
+      
+      // Set expiry time in state (for UI countdown if needed)
+      setTokenExpiryTime(decoded.exp);
+      
+      // Return true if token is expired
+      return decoded.exp < currentTime;
+    } catch (error) {
+      console.error('Token decode error:', error);
+      return true;
+    }
+  }, []);
+
+  // Refresh authentication silently
+  const refreshAuth = useCallback(async () => {
+    try {
+      const refreshToken = localStorage.getItem('refreshToken');
+      if (!refreshToken) {
+        throw new Error('No refresh token');
+      }
+      
+      const response = await authAPI.refreshToken({ refreshToken });
+      const { token, refreshToken: newRefreshToken } = response.data;
+      
+      localStorage.setItem('token', token);
+      localStorage.setItem('refreshToken', newRefreshToken);
+      
+      return true;
+    } catch (error) {
+      console.error('Auth refresh failed:', error);
+      return false;
+    }
+  }, []);
+
+  // Function to reload user data
+  const reloadUser = useCallback(async () => {
+    try {
+      const response = await authAPI.getCurrentUser();
+      setUser(response.data);
+      setIsAuthenticated(true);
+      return true;
+    } catch (error) {
+      console.error('Failed to reload user:', error);
+      return false;
+    }
+  }, []);
+
+  // Setup periodic token refresh
   useEffect(() => {
-    const checkLoggedIn = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        
-        if (token) {
-          // Get current user data
-          const response = await authAPI.getCurrentUser();
-          setCurrentUser(response.data);
+    if (!isAuthenticated || !tokenExpiryTime) return;
+    
+    // Calculate time until token expires (with 5-minute buffer)
+    const currentTime = Date.now() / 1000;
+    const timeUntilExpiry = tokenExpiryTime - currentTime - 300; // 5-minute buffer
+    const timeInMs = Math.max(timeUntilExpiry * 1000, 0);
+    
+    // Set up refresh timer
+    const refreshTimer = setTimeout(async () => {
+      const success = await refreshAuth();
+      if (success) {
+        await reloadUser();
+      } else {
+        logout();
+      }
+    }, timeInMs);
+    
+    return () => clearTimeout(refreshTimer);
+  }, [isAuthenticated, tokenExpiryTime, refreshAuth, reloadUser]);
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      // If token is expired, try to refresh
+      if (isTokenExpired()) {
+        const refreshed = await refreshAuth();
+        if (!refreshed) {
+          logout();
+          setLoading(false);
+          return;
         }
-      } catch (err) {
-        console.error("Failed to fetch user:", err);
-        // Clear potentially invalid token
-        localStorage.removeItem('token');
-        setError("Session expired. Please login again.");
+      }
+
+      // Get current user data
+      try {
+        const response = await authAPI.getCurrentUser();
+        setUser(response.data);
+        setIsAuthenticated(true);
+      } catch (error) {
+        // If token is invalid, clear it
+        logout();
       } finally {
         setLoading(false);
       }
     };
 
-    checkLoggedIn();
-  }, []);
+    checkAuth();
+  }, [isTokenExpired, refreshAuth]);
 
   // Login function
-  const login = async (credentials) => {
-    try {
-      setLoading(true);
-      const response = await authAPI.login(credentials);
-      
-      // Save token to local storage
-      localStorage.setItem('token', response.data.token);
-      
-      // Set user data
-      setCurrentUser(response.data.user);
-      
-      return response.data;
-    } catch (err) {
-      setError(err.response?.data?.message || "Login failed");
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
+  function login(credentials) {
+    return authAPI.login(credentials)
+      .then(response => {
+        const { user, token, refreshToken } = response.data;
+        localStorage.setItem('token', token);
+        if (refreshToken) {
+          localStorage.setItem('refreshToken', refreshToken);
+        }
+        setUser(user);
+        setIsAuthenticated(true);
+        
+        // Set token expiry time
+        try {
+          const decoded = jwtDecode(token);
+          setTokenExpiryTime(decoded.exp);
+        } catch (error) {
+          console.error('Token decode error:', error);
+        }
+        
+        return { success: true, user };
+      })
+      .catch(error => {
+        return { 
+          success: false, 
+          error: error.response?.data?.message || 'Login failed' 
+        };
+      });
+  }
 
-  // Add GitHub login method
-  const loginWithGitHub = async (code) => {
-    try {
-      setLoading(true);
-      const response = await authAPI.githubLogin(code);
-      
-      // Store both tokens - regular API and GitHub
-      localStorage.setItem('token', response.data.token);
-      if (response.data.githubToken) {
-        localStorage.setItem('githubToken', response.data.githubToken);
-      }
-      
-      setCurrentUser(response.data.user);
-      return response.data;
-    } catch (err) {
-      setError(err.response?.data?.message || "GitHub login failed");
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  };
+  // GitHub login function
+  function githubLogin(code) {
+    return authAPI.githubLogin(code)
+      .then(response => {
+        const { user, token, refreshToken, githubToken } = response.data;
+        localStorage.setItem('token', token);
+        if (refreshToken) {
+          localStorage.setItem('refreshToken', refreshToken);
+        }
+        if (githubToken) {
+          localStorage.setItem('githubToken', githubToken);
+        }
+        setUser(user);
+        setIsAuthenticated(true);
+        
+        // Set token expiry time
+        try {
+          const decoded = jwtDecode(token);
+          setTokenExpiryTime(decoded.exp);
+        } catch (error) {
+          console.error('Token decode error:', error);
+        }
+        
+        return { success: true, user };
+      })
+      .catch(error => {
+        return { 
+          success: false, 
+          error: error.response?.data?.message || 'GitHub login failed' 
+        };
+      });
+  }
+
+  // Register function
+  function register(userData) {
+    return authAPI.register(userData)
+      .then(response => {
+        const { user, token, refreshToken } = response.data;
+        localStorage.setItem('token', token);
+        if (refreshToken) {
+          localStorage.setItem('refreshToken', refreshToken);
+        }
+        setUser(user);
+        setIsAuthenticated(true);
+        
+        // Set token expiry time
+        try {
+          const decoded = jwtDecode(token);
+          setTokenExpiryTime(decoded.exp);
+        } catch (error) {
+          console.error('Token decode error:', error);
+        }
+        
+        return { success: true, user };
+      })
+      .catch(error => {
+        return { 
+          success: false, 
+          error: error.response?.data?.message || 'Registration failed' 
+        };
+      });
+  }
 
   // Logout function
-  const logout = () => {
+  function logout() {
     localStorage.removeItem('token');
-    setCurrentUser(null);
-  };
+    localStorage.removeItem('refreshToken');
+    localStorage.removeItem('githubToken');
+    setUser(null);
+    setIsAuthenticated(false);
+    setTokenExpiryTime(null);
+  }
 
-  // The auth context value
+  // Context value
   const value = {
-    currentUser,
+    user,
+    isAuthenticated,
     loading,
-    error,
+    tokenExpiryTime,
     login,
-    loginWithGitHub,
-    logout
+    register,
+    logout,
+    githubLogin,
+    refreshAuth,
+    reloadUser
   };
 
-  // Return the provider with the context value
+  // Return provider
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      {props.children}
     </AuthContext.Provider>
   );
-};
+}

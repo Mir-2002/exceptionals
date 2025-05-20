@@ -1,62 +1,68 @@
-import { notifyError } from './toast';
+import { toast } from 'react-toastify';
 
 /**
- * Handles API errors in a standardized way
- * @param {Error} error - The error object from axios
- * @param {Object} options - Configuration options
+ * Handles API errors consistently throughout the application.
+ * 
+ * @param {Object} error - The error object from the API request
+ * @param {Object} options - Options for error handling behavior
+ * @param {string} options.defaultMessage - Default message if none is available from API
+ * @param {boolean} options.showToast - Whether to show a toast notification
+ * @param {string} options.redirectTo - Path to redirect to after error
  * @returns {Object} Standardized error object
  */
 export const handleApiError = (error, options = {}) => {
-  const {
-    showToast = true,
-    defaultMessage = 'An unexpected error occurred',
-    logToConsole = true
-  } = options;
-
-  // Extract error details
-  const status = error.response?.status;
-  const message = error.response?.data?.message || error.message || defaultMessage;
+  // Default options
+  const defaults = {
+    defaultMessage: 'An error occurred',
+    showToast: true,
+    redirectTo: null,
+    logToConsole: true
+  };
   
-  // Build error object with additional context
+  const settings = { ...defaults, ...options };
+  
+  // Prepare error details for logging
   const errorDetails = {
-    status,
-    message,
+    status: error?.response?.status,
+    message: error?.response?.data?.message || error.message || settings.defaultMessage,
     originalError: error,
     timestamp: new Date().toISOString()
   };
-
-  // Log error to console if enabled
-  if (logToConsole) {
-    console.error('API Error:', errorDetails);
+  
+  // For network errors in development, show a specific message
+  if (error.message === 'Network Error' && import.meta.env.DEV) {
+    errorDetails.message = 'Backend connection failed. Using development mode.';
+  }
+  
+  // Log error to console
+  if (settings.logToConsole) {
+    console.log('API Error:', errorDetails);
   }
 
-  // Show toast notification if enabled
-  if (showToast) {
-    let errorMessage = message;
-    
-    // Add status-specific messaging
-    if (status === 401) {
-      errorMessage = 'Your session has expired. Please login again.';
-      // Optional: Redirect to login
-      if (options.redirectOnAuth) {
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 1500);
-      }
-    } else if (status === 403) {
-      errorMessage = 'You don\'t have permission to perform this action.';
-    } else if (status === 404) {
-      errorMessage = 'The requested resource was not found.';
-    } else if (status === 422) {
-      errorMessage = 'The submitted data is invalid.';
-    } else if (status >= 500) {
-      errorMessage = 'Server error. Please try again later.';
+  // Safely show toast (with error handling to prevent toast rendering issues)
+  if (settings.showToast && typeof toast === 'function') {
+    try {
+      // Use a simpler message for the toast to avoid rendering issues
+      const safeMessage = errorDetails.message || 'An error occurred';
+      
+      // Use a timeout to prevent React render cycle issues
+      setTimeout(() => {
+        toast.error(safeMessage, {
+          autoClose: 5000,
+          toastId: `error-${Date.now()}`  // Ensure unique ID
+        });
+      }, 0);
+    } catch (toastError) {
+      // If toast fails, just log it
+      console.error('Toast notification failed:', toastError);
     }
-    
-    notifyError(errorMessage);
   }
-
-  // Return standardized error object
+  
+  // Handle redirect if specified
+  if (settings.redirectTo) {
+    window.location.href = settings.redirectTo;
+  }
+  
   return errorDetails;
 };
 
