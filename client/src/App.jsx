@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
-import { autoLogin, getLoggedInUser } from './shared/utils/autoLogin';
 
 // Layout component
 import Layout from "./shared/components/Layout";
@@ -13,22 +12,19 @@ import FileUpload from "./features/fileUpload/pages/FileUpload";
 import FolderUpload from './features/folderUpload/pages/FolderUpload';
 import UploadSelection from "./features/dashboard/pages/UploadSelection";
 import RepoUpload from "./features/repoUpload/pages/RepoUpload";
+import ProjectDetail from "./features/project/pages/ProjectDetail";
+import DocumentationViewer from './features/documentation/pages/DocumentationViewer';
+import EditDocumentation from './features/documentation/pages/EditDocumentation';
+import FileDocumentation from './features/documentation/pages/FileDocumentation';
 
 // Auth components
 import Register from "./features/auth/pages/Register";
 import Login from "./features/auth/pages/Login";
 import AuthTest from './features/auth/pages/AuthTest';
 import { AuthProvider } from "./shared/contexts/AuthContext";
+import GitHubCallback from './features/auth/pages/GitHubCallback';
 
 function App() {
-  // Auto-login at app startup if in development mode
-  useEffect(() => {
-    if (import.meta.env.DEV && !getLoggedInUser()) {
-      console.log('🔐 Development mode: Auto-login enabled');
-      autoLogin();
-    }
-  }, []);
-
   return (
     <AuthProvider>
       <BrowserRouter>
@@ -42,18 +38,13 @@ function App() {
             <Route path="/upload-selection" element={<UploadSelection />} />
             <Route path="/repo-upload" element={<RepoUpload />} />
             <Route path="/auth-test" element={<AuthTest />} />
-            <Route 
-              path="/login" 
-              element={
-                import.meta.env.DEV ? <Navigate to="/dashboard" replace /> : <Login />
-              } 
-            />
-            <Route 
-              path="/register" 
-              element={
-                import.meta.env.DEV ? <Navigate to="/dashboard" replace /> : <Register />
-              } 
-            />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/project/:id" element={<ProjectDetail />} />
+            <Route path="/project/:id/documentation" element={<DocumentationViewer />} />
+            <Route path="/file/:fileId" element={<FileDocumentation />} />
+            <Route path="/file/:fileId/edit" element={<EditDocumentation />} />
+            <Route path="/auth/github/callback" element={<GitHubCallback />} />
           </Route>
         </Routes>
       </BrowserRouter>
