@@ -20,6 +20,7 @@ class ProjectModel(BaseModel):
 
     description: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_id : Optional[PyObjectId] = None
 
     # Validators
     @field_validator("name")

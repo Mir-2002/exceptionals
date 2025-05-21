@@ -63,6 +63,48 @@ class CodeParserService:
                 "functions": []
             }
     
+    def parse_code(self, code: str) -> Dict[str, Any]:
+        """
+        Parse Python code string and extract its structure.
+        
+        Args:
+            code: Python code as a string
+                
+        Returns:
+            Dictionary containing the code structure with classes and functions
+        """
+        try:
+            self.file_lines = code.splitlines()
+                
+            # Check if code is empty
+            if not code.strip():
+                return {
+                    "file_name": "code_snippet",
+                    "error": "Code is empty",
+                    "classes": [],
+                    "functions": []
+                }
+                    
+            tree = ast.parse(code)
+            return self._analyze_ast(tree, "code_snippet")
+        except SyntaxError as e:
+            return {
+                "file_name": "code_snippet",
+                "error": f"Python syntax error: {str(e)}",
+                "error_line": e.lineno,
+                "error_offset": e.offset,
+                "classes": [],
+                "functions": []
+            }
+        except Exception as e:
+            return {
+                "file_name": "code_snippet",
+                "error": f"Failed to parse code: {str(e)}",
+                "error_details": traceback.format_exc(),
+                "classes": [],
+                "functions": []
+            }
+    
     def _analyze_ast(self, tree: ast.AST, file_name: str) -> Dict[str, Any]:
         """
         Analyze the AST and extract classes and functions.

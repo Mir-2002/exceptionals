@@ -1,31 +1,70 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from utils.db import db 
+import logging
+import asyncio
+
+from utils.db import db
 from view.UserView import router as user_router
 from view.ProjectView import router as project_router
 from view.FileView import router as file_router
 from view.AuthView import router as auth_router
+from view.DocumentationView import router as documentation_router
+from utils.model_service import get_model_service
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True
+)
+
+# Add these lines to ensure all logs are visible
+logging.getLogger('utils.model_service').setLevel(logging.DEBUG)
+logging.getLogger('controller').setLevel(logging.DEBUG)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def app_lifespan(app: FastAPI):
     # Connect to the database when the app starts
     try:
         await db.connect_to_database(app)
         print("Database connection established.")
+        
+        # Initialize model service (but don't load model yet)
+        model_service = get_model_service()
+        await model_service.initialize()
+        print("Documentation service initialized.")
+        
+        # This special yield pattern is required for Python 3.13 compatibility
         yield
-    # Disconnect from the database when the app stops
+    # Clean up resources when the app stops
     finally:
+        # Clean up model service resources
+        model_service = get_model_service()
+        await model_service.cleanup()
+        print("Model service cleaned up.")
+        
+        # Disconnect from database
         await db.close_database_connection()
         print("Database connection closed.")
 
+# Work around Python 3.13 async iterator compatibility issue
+def get_lifespan(lifespan_func):
+    @asynccontextmanager
+    async def _wrapper(app):
+        async with lifespan_func(app):
+            yield {}
+    return _wrapper
+
+# Create the FastAPI app with the lifespan handler
 app = FastAPI(
-    title="Automatic Python Documentation Generator",
-    description="An NLP powered tool to generate documentation for Python code.",
+    title="Python Documentation Generator",
+    description="Automated Python codebase documentation generation using Abstract Syntax Trees and NLP techniques",
     version="0.1.0",
-    lifespan=lifespan,
+    lifespan=get_lifespan(app_lifespan),
 )
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,21 +75,11 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the Automatic Python Documentation Generator API!"}
+    return {"message": "Welcome to the Python Documentation Generator API!"}
 
-app.include_router(auth_router, prefix="/api", tags=["auth"])
+# Include routers
+app.include_router(auth_router, prefix="/api", tags=["authentication"])
 app.include_router(user_router, prefix="/api", tags=["users"])
 app.include_router(project_router, prefix="/api", tags=["projects"])
 app.include_router(file_router, prefix="/api", tags=["files"])
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info", reload=True, debug=True)
-
-        
-        
-
-
-        
-
-
+app.include_router(documentation_router, prefix="/api", tags=["documentation"])

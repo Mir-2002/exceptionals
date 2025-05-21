@@ -101,7 +101,7 @@ def prepare_document_for_response(document):
             
     return document_copy
 
-async def create(project: ProjectModel, db=Depends(get_db)):
+async def create(project: ProjectModel, current_user ,db=Depends(get_db)):
     """
     Create a new project with transaction support if available.
     """
@@ -119,6 +119,7 @@ async def create(project: ProjectModel, db=Depends(get_db)):
     try:
         # Insert the project with transaction if available
         project_data = project.model_dump(by_alias=True)
+        project_data["user_id"] = current_user["_id"]
         created_project = None
         
         async with get_transaction_session("Create new project") as session:

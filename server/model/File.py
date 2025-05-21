@@ -62,6 +62,8 @@ class FileModel(BaseModel):
     structure: Optional[Dict[str, Any]] = None
     excluded_classes: List[str] = []
     excluded_functions: List[str] = []
+    documented_content: Optional[str] = None
+    documented_at: Optional[datetime] = None
 
     MAX_FILE_SIZE : ClassVar[int] = 100 * 1024 * 1024  # 100 MB
 

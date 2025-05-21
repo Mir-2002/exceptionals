@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.post("/projects", response_model=ProjectResponseModel)
 async def create_project(project: ProjectModel, current_user = Depends(get_current_user),db=Depends(get_db)):
-    return await create(project, db)
+    return await create(project, current_user, db)
 
 @router.get("/projects/{project_id}", response_model=ProjectResponseModel)
 async def get_project(project_id: str, current_user = Depends(get_current_user),db=Depends(get_db)):
