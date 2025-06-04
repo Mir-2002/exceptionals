@@ -4,6 +4,10 @@
 
 The Projects API provides comprehensive project management functionality including creation, retrieval, updates, deletion, structure analysis, exclusion management, and ZIP file uploads. All endpoints require authentication.
 
+## NOTE
+
+A /testing_files folder is provided containing a test file and folder.
+
 ## Base URL
 
 ```

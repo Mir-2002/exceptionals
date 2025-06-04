@@ -4,6 +4,10 @@
 
 The Files API provides comprehensive file management functionality including file uploads, retrieval, structure analysis, content access, exclusion management, and deletion. All endpoints require authentication and proper project ownership verification.
 
+## NOTE
+
+A /testing_files folder is provided containing a test file and folder.
+
 ## Base URL
 
 ```
