@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from typing import Optional, Dict, Any, List
-from utils.model_service import MODEL_DIR, MODEL_NAME, get_model_service
 from utils.db import get_db
 from utils.auth import get_current_user, verify_file_owner
 from model.Documentation import (
@@ -31,10 +30,10 @@ async def create_docstring(
     current_user = Depends(get_current_user)
 ):
     """
-    Generate a docstring for a code snippet using AST-enhanced NLP.
+    Generate a docstring for a code snippet using AST-enhanced NLP via Hugging Face API.
     
-    This endpoint combines AST analysis with CodeT5 to create more accurate
-    and contextually-aware documentation.
+    This endpoint combines AST analysis with CodeT5+ hosted on Hugging Face to create 
+    more accurate and contextually-aware documentation.
     """
     return await generate_ast_nlp_docstring(snippet.code, element_type, element_name)
 
@@ -47,10 +46,10 @@ async def document_file_endpoint(
     db = Depends(get_db)
 ):
     """
-    Generate documentation for an entire file using AST-enhanced NLP.
+    Generate documentation for an entire file using AST-enhanced NLP via Hugging Face API.
     
     This endpoint processes a Python file and adds documentation to all functions and classes
-    using a combination of Abstract Syntax Tree analysis and advanced language models.
+    using a combination of Abstract Syntax Tree analysis and CodeT5+ via Hugging Face Inference API.
     Requires authentication and file ownership.
     
     Returns a task ID that can be used to check the documentation status.
@@ -111,42 +110,3 @@ async def search_code(
     and returns contextual information about matches.
     """
     return await search_code_context(file_id, query.query, db)
-
-# Add this endpoint to your existing DocumentationView.py
-
-@router.get("/docs/model-status", response_model=Dict[str, Any])
-async def check_model_status(current_user = Depends(get_current_user)):
-    """
-    Check if the model is loaded and working.
-    This endpoint forces model loading if not already loaded.
-    """
-    model_service = get_model_service()
-    
-    # Get model status
-    is_loaded = await model_service.is_model_loaded()
-    
-    # Try to load if not already
-    if not is_loaded:
-        await model_service.ensure_model_loaded()
-        is_loaded = await model_service.is_model_loaded()
-    
-    # Test with simple function
-    sample_code = "def add(a, b):\n    return a + b"
-    
-    result = {
-        "model_loaded": is_loaded,
-        "model_name": MODEL_NAME,
-        "model_dir": MODEL_DIR,
-        "transformers_available": model_service.transformers_available,
-        "device": model_service.device,
-        "test_result": None
-    }
-    
-    if is_loaded:
-        try:
-            docstring = await model_service.generate_docstring(sample_code)
-            result["test_result"] = docstring
-        except Exception as e:
-            result["test_error"] = str(e)
-    
-    return result

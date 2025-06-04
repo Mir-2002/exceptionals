@@ -10,7 +10,6 @@ from view.ProjectView import router as project_router
 from view.FileView import router as file_router
 from view.AuthView import router as auth_router
 from view.DocumentationView import router as documentation_router
-from utils.model_service import get_model_service
 
 # Set up logging
 logging.basicConfig(
@@ -19,9 +18,9 @@ logging.basicConfig(
     force=True
 )
 
-# Add these lines to ensure all logs are visible
-logging.getLogger('utils.model_service').setLevel(logging.DEBUG)
+# Set logging levels for better debugging
 logging.getLogger('controller').setLevel(logging.DEBUG)
+logging.getLogger('utils').setLevel(logging.DEBUG)
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
@@ -29,21 +28,12 @@ async def app_lifespan(app: FastAPI):
     try:
         await db.connect_to_database(app)
         print("Database connection established.")
-        
-        # Initialize model service (but don't load model yet)
-        model_service = get_model_service()
-        await model_service.initialize()
-        print("Documentation service initialized.")
+        print("Documentation service using Hugging Face Inference API.")
         
         # This special yield pattern is required for Python 3.13 compatibility
         yield
     # Clean up resources when the app stops
     finally:
-        # Clean up model service resources
-        model_service = get_model_service()
-        await model_service.cleanup()
-        print("Model service cleaned up.")
-        
         # Disconnect from database
         await db.close_database_connection()
         print("Database connection closed.")
@@ -59,7 +49,7 @@ def get_lifespan(lifespan_func):
 # Create the FastAPI app with the lifespan handler
 app = FastAPI(
     title="Python Documentation Generator",
-    description="Automated Python codebase documentation generation using Abstract Syntax Trees and NLP techniques",
+    description="Automated Python codebase documentation generation using Abstract Syntax Trees and NLP techniques via Hugging Face API",
     version="0.1.0",
     lifespan=get_lifespan(app_lifespan),
 )

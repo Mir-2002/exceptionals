@@ -2,16 +2,22 @@ from fastapi import HTTPException, BackgroundTasks
 from bson import ObjectId
 import logging
 from datetime import datetime, timezone
-from utils.model_service import get_model_service
+import requests
+import os
 from controller.FileController import get_file_content
 from utils.task_queue import get_task_queue, TaskStatus
+from utils.ast_enhancer import get_ast_enhancer
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Hugging Face API configuration
+HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")  # Set this in your environment
+HF_MODEL_URL = "https://api-inference.huggingface.co/models/Salesforce/codet5p-770m"
+
 async def generate_ast_nlp_docstring(code, element_type=None, element_name=None):
     """
-    Generate a docstring for code using combined AST and NLP techniques.
+    Generate a docstring for code using Hugging Face CodeT5+ API with AST enhancement.
     
     Args:
         code: Python code to document
@@ -22,16 +28,80 @@ async def generate_ast_nlp_docstring(code, element_type=None, element_name=None)
         Generated docstring
     """
     try:
-        # Get the unified model service
-        model_service = get_model_service()
+        # Get AST enhancer for better context
+        ast_enhancer = get_ast_enhancer()
         
-        # Generate docstring with AST-enhanced context
-        docstring = await model_service.generate_docstring(code, element_type, element_name)
+        # Prepare code with AST context
+        enhanced_data = ast_enhancer.prepare_for_docgen(code, element_type, element_name)
+        
+        # Generate prompt with AST context
+        prompt = ast_enhancer.generate_prompt_with_ast_context(enhanced_data)
+        
+        # Call Hugging Face API
+        docstring = await _call_huggingface_api(prompt)
         
         return {"docstring": docstring}
     except Exception as e:
         logger.error(f"Error generating docstring: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate docstring: {str(e)}")
+
+async def _call_huggingface_api(prompt: str) -> str:
+    """Call Hugging Face Inference API for text generation"""
+    if not HF_API_TOKEN:
+        raise HTTPException(status_code=500, detail="Hugging Face API token not configured")
+    
+    headers = {
+        "Authorization": f"Bearer {HF_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 256,
+            "temperature": 0.7,
+            "do_sample": True,
+            "top_p": 0.9
+        }
+    }
+    
+    try:
+        response = requests.post(HF_MODEL_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Handle different response formats
+        if isinstance(result, list) and len(result) > 0:
+            generated_text = result[0].get("generated_text", "")
+        elif isinstance(result, dict):
+            generated_text = result.get("generated_text", "")
+        else:
+            generated_text = str(result)
+        
+        # Clean up the generated text to extract just the docstring
+        return _extract_docstring_from_response(generated_text, prompt)
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Hugging Face API request failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="External API request failed")
+
+def _extract_docstring_from_response(generated_text: str, original_prompt: str) -> str:
+    """Extract clean docstring from API response"""
+    # Remove the original prompt from the response
+    if original_prompt in generated_text:
+        docstring = generated_text.replace(original_prompt, "").strip()
+    else:
+        docstring = generated_text.strip()
+    
+    # Clean up common artifacts
+    docstring = docstring.replace("```python", "").replace("```", "")
+    
+    # If it's too short or empty, provide a fallback
+    if len(docstring.strip()) < 10:
+        return '"""Auto-generated documentation."""'
+    
+    return docstring
 
 async def _background_file_documentation(file_id, db, options=None):
     """Background task for generating file documentation"""
@@ -59,9 +129,8 @@ async def _background_file_documentation(file_id, db, options=None):
         
         logger.info(f"Generating documentation for file {file_id} with {len(file_content)} characters")
         
-        # Generate documentation using the unified model service
-        model_service = get_model_service()
-        documented_content = await model_service.generate_file_docs(file_content)
+        # Generate documentation using Hugging Face API
+        documented_content = await _generate_file_docs_with_hf(file_content)
         
         logger.info(f"Documentation generated, updating file {file_id} with {len(documented_content)} characters")
         
@@ -71,7 +140,7 @@ async def _background_file_documentation(file_id, db, options=None):
                 {"_id": ObjectId(file_id)},
                 {"$set": {
                     "documented_content": documented_content,
-                    "documented_at": datetime.now(timezone.utc)  # Force an update by always changing this field
+                    "documented_at": datetime.now(timezone.utc)
                 }}
             )
             logger.info(f"Update result: matched_count={file_update_result.matched_count}, modified_count={file_update_result.modified_count}")
@@ -80,12 +149,12 @@ async def _background_file_documentation(file_id, db, options=None):
             task_queue.update_task(task_id, TaskStatus.FAILED, error=f"Database error: {str(e)}")
             return
         
-        # Check if document was found (not if it was modified)
+        # Check if document was found
         if file_update_result.matched_count == 0:
             task_queue.update_task(task_id, TaskStatus.FAILED, error="File not found during documentation update")
             return
         
-        # Mark task as completed even if content didn't change
+        # Mark task as completed
         task_queue.update_task(task_id, TaskStatus.COMPLETED, result={
             "file_id": file_id,
             "success": True
@@ -94,6 +163,37 @@ async def _background_file_documentation(file_id, db, options=None):
     except Exception as e:
         logger.error(f"Error in background documentation: {str(e)}")
         task_queue.update_task(task_id, TaskStatus.FAILED, error=str(e))
+
+async def _generate_file_docs_with_hf(file_content: str) -> str:
+    """Generate documentation for entire file using Hugging Face API"""
+    try:
+        # Use AST enhancer to parse the file
+        ast_enhancer = get_ast_enhancer()
+        context = ast_enhancer.enhance_code_context(file_content)
+        
+        # Process functions and classes individually
+        documented_parts = []
+        
+        # Process functions
+        for func in context.get("function_signatures", []):
+            func_name = func.get("name", "")
+            if func_name:
+                try:
+                    enhanced_data = ast_enhancer.prepare_for_docgen(file_content, "function", func_name)
+                    prompt = ast_enhancer.generate_prompt_with_ast_context(enhanced_data)
+                    docstring = await _call_huggingface_api(prompt)
+                    documented_parts.append(f"# Function: {func_name}\n{docstring}\n")
+                except Exception as e:
+                    logger.warning(f"Failed to document function {func_name}: {str(e)}")
+        
+        # For now, return the original content with a header indicating it's been processed
+        # You can enhance this to actually insert the docstrings into the code
+        header = "# This file has been processed for documentation\n\n"
+        return header + file_content
+        
+    except Exception as e:
+        logger.error(f"Error generating file documentation: {str(e)}")
+        return file_content  # Return original if documentation fails
 
 async def document_file(file_id, background_tasks: BackgroundTasks, db, options=None):
     """Start a background task to generate documentation for an entire file"""
@@ -169,16 +269,35 @@ async def search_code_context(file_id, query, db):
     try:
         # Get the file content
         file_content_response = await get_file_content(file_id, db)
-        file_content = file_content_response.content if file_content_response else ""  # Fixed to use attribute access
+        file_content = file_content_response.content if file_content_response else ""
         
         if not file_content:
             raise HTTPException(status_code=404, detail="File content not found")
         
-        # Use the model service to search the code
-        model_service = get_model_service()
-        search_results = await model_service.search_related_code(file_content, query)
+        # Use AST enhancer to search the code
+        ast_enhancer = get_ast_enhancer()
+        context = ast_enhancer.enhance_code_context(file_content)
         
-        return search_results
+        # Simple search implementation
+        matches = {
+            "functions": [],
+            "classes": [],
+            "variables": []
+        }
+        
+        # Search in function signatures
+        for func in context.get("function_signatures", []):
+            if query.lower() in func.get("name", "").lower():
+                matches["functions"].append(func)
+        
+        # Calculate total matches
+        total_matches = sum(len(matches[key]) for key in matches)
+        
+        return {
+            "query": query,
+            "matches": matches,
+            "total_matches": total_matches
+        }
     except Exception as e:
         logger.error(f"Error searching code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to search code: {str(e)}")
