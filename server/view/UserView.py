@@ -1,76 +1,79 @@
-from fastapi import APIRouter, Depends
-from controller.UserController import create, remove, update, get, get_all
-from model.User import UserCreate, UserUpdate, UserResponse, DeleteUserResponse
-from utils.db import db  # Use the singleton instance
+from fastapi import APIRouter, Depends, HTTPException
+from controller.UserController import create, get, remove, update
+from model.User import BaseResponseModel, DeleteUserResponseModel, UpdateUserResponseModel, UserCreateModel, UserModel, UserUpdateModel
+from utils.auth import get_current_user
+from utils.db import get_db
+
 
 router = APIRouter()
 
-@router.post("/users/", response_model=UserResponse)
-async def create_user(user: UserCreate, db_instance=Depends(lambda: db)):
+@router.post("/users", response_model=BaseResponseModel)
+async def create_user(user: UserCreateModel, db=Depends(get_db)):
     """
-    Creates a new user.
+    Create a new user.
     
     Args:
-        user (UserCreate): The user data to create.
-        db_instance: The database instance.
+        user (UserCreateModel): The user data to create.
+        current_user: The authenticated user making the request.
+        db: The database instance.
 
     Returns:
-        UserResponse: The created user data.
+        BaseResponseModel: The created user data.
     """
-    return await create(user, db_instance)
+    # Call the create function from the controller
+    return await create(user, db)
 
-@router.delete("/users/{user_id}", response_model=DeleteUserResponse)
-async def delete_user(user_id: str, db_instance=Depends(lambda: db)):
+@router.get("/users/{user_id}", response_model=UserModel)
+async def get_user(user_id: str, current_user = Depends(get_current_user), db=Depends(get_db)):
     """
-    Deletes a user by ID.
-    
-    Args:
-        user_id (str): The ID of the user to delete.
-        db_instance: The database instance.
-
-    Returns:
-        DeleteUserResponse: A response indicating the result of the deletion.
-    """
-    return await remove(user_id, db_instance)
-
-@router.patch("/users/{user_id}", response_model=UserResponse)
-async def update_user(user_id: str, user_update: UserUpdate, db_instance=Depends(lambda: db)):
-    """
-    Updates a user by ID.
-    
-    Args:
-        user_id (str): The ID of the user to update.
-        user_update (UserUpdate): The updated user data.
-        db_instance: The database instance.
-
-    Returns:
-        UserResponse: The updated user data.
-    """
-    return await update(user_id, user_update, db_instance)
-
-@router.get("/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str, db_instance=Depends(lambda: db)):
-    """
-    Retrieves a user by ID.
+    Get a user by ID.
     
     Args:
         user_id (str): The ID of the user to retrieve.
-        db_instance: The database instance.
+        current_user: The authenticated user making the request.
+        db: The database instance.
 
     Returns:
-        UserResponse: The retrieved user data.
+        BaseResponseModel: The retrieved user data.
     """
-    return await get(user_id, db_instance)
+    # Call the get function from the controller
+    return await get(user_id, db)
 
-@router.get("/users/", response_model=list[UserResponse])
-async def get_all_users(limit: int = 10, skip: int = 0, db_instance=Depends(lambda: db)):
+@router.patch("/users/{user_id}", response_model=UpdateUserResponseModel)
+async def update_user(user_id: str, user_update: UserUpdateModel, current_user = Depends(get_current_user), db=Depends(get_db)):
     """
-    Retrieves all users.
+    Update a user by ID.
     
     Args:
-        db_instance: The database instance.
+        user_id (str): The ID of the user to update.
+        user_update (UserModel): The updated user data.
+        current_user: The authenticated user making the request.
+        db: The database instance.
 
     Returns:
-        list[UserResponse]: A list of all user data.
+        UpdateUserResponseModel: The updated user data.
     """
-    return await get_all(limit=limit, skip=skip, db_instance = db_instance)
+    # Call the update function from the controller
+    if str(user_id) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="You can only update your own profile.")
+    
+    return await update(user_id, user_update, db)
+
+@router.delete("/users/{user_id}", response_model=DeleteUserResponseModel)
+async def delete_user(user_id: str, current_user = Depends(get_current_user), db=Depends(get_db)):
+    """
+    Delete a user by ID.
+    
+    Args:
+        user_id (str): The ID of the user to delete.
+        current_user: The authenticated user making the request.
+        db: The database instance.
+
+    Returns:
+        DeleteUserResponseModel: A response indicating the result of the deletion.
+    """
+    if str(user_id) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="You can only delete your own profile.")
+    
+    # Call the remove function from the controller
+    return await remove(user_id, db)

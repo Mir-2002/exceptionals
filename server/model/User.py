@@ -1,30 +1,17 @@
-from bson import ObjectId
-from pydantic import BaseModel, ConfigDict, EmailStr, Field ,field_validator, model_validator
 from datetime import datetime, timezone
-from typing import Optional
-from typing_extensions import Self
+from typing import Any, Optional, Self
+from bson import ObjectId
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+
 from utils.custom_types import PyObjectId
 
-# User Base Model
-class UserBase(BaseModel):
+
+class UserModel(BaseModel):
+    id: Optional[str] = Field(None, alias="_id")
     email: EmailStr
     username: str
-    full_name: Optional[str] = None
-    disabled: bool = False
-    is_admin: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_login: Optional[datetime] = None
-
-    # Email Validator
-    @field_validator('email', mode='before')
-    @classmethod
-    def validate_email(cls, email: str) -> str:
-        if '@' not in email or '.' not in email.split('@')[-1]:
-            raise ValueError('Invalid email format')
-        return email
     
-    # Username Validator
     @field_validator('username', mode='before')
     @classmethod
     def validate_username(cls, username: str) -> str:
@@ -34,18 +21,10 @@ class UserBase(BaseModel):
             raise ValueError('Username must be alphanumeric')
         return username
     
-    # Updated Config for Pydantic v2
-    model_config = ConfigDict(
-        populate_by_name=True,
-        json_encoders={ObjectId: str}
-    )
-
-# User Inheritance for Create
-class UserCreate(UserBase):
+class UserCreateModel(UserModel):
     password: str
     password_repeat: str
 
-    # Password Validator
     @field_validator('password', mode='after')
     @classmethod
     def validate_password(cls, password: str) -> str:
@@ -57,39 +36,53 @@ class UserCreate(UserBase):
             raise ValueError('Password must contain at least one letter')
         return password
     
-    # Check if passwords match
     @model_validator(mode='after')
     def check_passwords_match(self) -> Self:
         if self.password != self.password_repeat:
             raise ValueError('Passwords do not match')
         return self
     
-# User Inheritance for Update
-class UserUpdate(UserBase):
+class UserUpdateModel(UserModel):
+    email: Optional[EmailStr] = None
+    username: Optional[str] = None
     full_name: Optional[str] = None
-
-# Class for User Model in Database
-class UserInDB(UserBase):
+    
+class UserInDBModel(UserModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     hashed_password: str
 
-    # Updated Config for Pydantic v2
-    model_config = ConfigDict(
-        populate_by_name=True,
-        json_encoders={ObjectId: str},
-        arbitrary_types_allowed=True
-    )
-
-# Class for Returning User Response
-class UserResponse(UserBase):
+class BaseResponseModel(BaseModel):
     id: str = Field(alias="_id")
+    username: str
+    message: str = "Operation successful"
 
-    # Updated Config for Pydantic v2
+    @field_validator('id', mode='before')
+    @classmethod
+    def convert_pyobjectid_to_str(cls, value: Any) -> str:
+        if isinstance(value, PyObjectId):
+            return str(value)
+        if isinstance(value, ObjectId):
+            return str(value)
+        return value
+
     model_config = ConfigDict(
         populate_by_name=True,
         json_encoders={ObjectId: str}
     )
 
-# Class for Deleting User Response
-class DeleteUserResponse(BaseModel):
-    message: str
+class DeleteUserResponseModel(BaseResponseModel):
+    message: str = "User deleted successfully"
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
+
+class UpdateUserResponseModel(BaseResponseModel):
+    updated_fields: dict[str, Any] = Field(default_factory=dict)
+    message: str = "User updated successfully"
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
