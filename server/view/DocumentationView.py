@@ -1,112 +1,128 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from typing import Optional, Dict, Any, List
-from utils.db import get_db
-from utils.auth import get_current_user, verify_file_owner
-from model.Documentation import (
-    CodeSnippetModel, 
-    DocstringResponseModel,
-    TaskStatusResponseModel,
-    DocumentedContentResponseModel,
-    SearchQueryModel,
-    SearchResultsResponseModel,
-    DocumentationOptionsModel
-)
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from controller.DocumentationController import (
-    generate_ast_nlp_docstring,
-    document_file,
-    get_task_status,
-    get_documented_content,
-    search_code_context,
-    list_tasks
+    generate_docstring_for_code,
+    document_file_functions,
+    document_project_functions,
+    get_file_documentation_data,
+    get_project_documentation_data,
+    export_file_documentation_content
 )
+from model.Documentation import (
+    DocstringRequest,
+    DocstringResponse,
+    FileDocumentationRequest,
+    FileDocumentationResponse,
+    ProjectDocumentationRequest,
+    ProjectDocumentationResponse,
+    DocumentedItem
+)
+from utils.auth import get_current_user
+from utils.db import get_db
+from bson import ObjectId
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
-@router.post("/docs/generate", response_model=DocstringResponseModel)
-async def create_docstring(
-    snippet: CodeSnippetModel,
-    element_type: Optional[str] = Query(None, description="Type of element (function, class)"),
-    element_name: Optional[str] = Query(None, description="Name of the element to document"),
-    current_user = Depends(get_current_user)
-):
-    """
-    Generate a docstring for a code snippet using AST-enhanced NLP via Hugging Face API.
-    
-    This endpoint combines AST analysis with CodeT5+ hosted on Hugging Face to create 
-    more accurate and contextually-aware documentation.
-    """
-    return await generate_ast_nlp_docstring(snippet.code, element_type, element_name)
-
-@router.post("/files/{file_id}/document", response_model=Dict[str, Any])
-async def document_file_endpoint(
-    file_id: str,
-    background_tasks: BackgroundTasks,
-    options: Optional[DocumentationOptionsModel] = None,
-    file_data = Depends(verify_file_owner),
+@router.post("/docs/generate", response_model=DocstringResponse)
+async def generate_docstring(
+    request: DocstringRequest,
+    current_user = Depends(get_current_user),
     db = Depends(get_db)
 ):
-    """
-    Generate documentation for an entire file using AST-enhanced NLP via Hugging Face API.
-    
-    This endpoint processes a Python file and adds documentation to all functions and classes
-    using a combination of Abstract Syntax Tree analysis and CodeT5+ via Hugging Face Inference API.
-    Requires authentication and file ownership.
-    
-    Returns a task ID that can be used to check the documentation status.
-    """
-    options_dict = options.dict() if options else {}
-    return await document_file(file_id, background_tasks, db, options_dict)
+    """Generate a docstring for a code snippet."""
+    return await generate_docstring_for_code(request)
 
-@router.get("/docs/tasks/{task_id}", response_model=Dict[str, Any])
-async def check_task_status_endpoint(
-    task_id: str,
-    current_user = Depends(get_current_user)
+@router.post("/files/{file_id}/document", response_model=FileDocumentationResponse)
+async def document_file(
+    file_id: str,
+    options: FileDocumentationRequest = None,
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
 ):
-    """
-    Check the status of a documentation task.
-    
-    Use this to monitor the progress of a long-running documentation job.
-    """
-    return await get_task_status(task_id)
+    """Generate documentation for all functions/classes in a file."""
+    # TODO: Add file ownership verification
+    # await verify_file_owner(file_id, current_user["_id"], db)
+    return await document_file_functions(file_id, options, db)
 
-@router.get("/docs/tasks", response_model=List[Dict[str, Any]])
-async def list_tasks_endpoint(
-    limit: int = Query(20, ge=1, le=100),
-    skip: int = Query(0, ge=0),
-    current_user = Depends(get_current_user)
+@router.post("/projects/{project_id}/document", response_model=ProjectDocumentationResponse)
+async def document_project(
+    project_id: str,
+    options: ProjectDocumentationRequest = None,
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
 ):
-    """
-    List all documentation tasks.
-    
-    Returns a list of tasks with their current status.
-    """
-    return await list_tasks(limit, skip)
+    """Generate documentation for all files in a project."""
+    # TODO: Add project ownership verification
+    # await verify_project_owner(project_id, current_user["_id"], db)
+    return await document_project_functions(project_id, options, db)
 
-@router.get("/files/{file_id}/documented-content", response_model=DocumentedContentResponseModel)
-async def get_file_documented_content(
+@router.get("/files/{file_id}/documentation", response_model=FileDocumentationResponse)
+async def get_file_documentation(
     file_id: str,
     current_user = Depends(get_current_user),
     db = Depends(get_db)
 ):
-    """
-    Get the documented content of a file.
+    """Retrieve stored documentation for a file."""
+    data = await get_file_documentation_data(file_id, db)
     
-    Returns the file content with generated documentation if it exists.
-    Otherwise returns the original content.
-    """
-    return await get_documented_content(file_id, db)
+    # Convert to proper response model
+    documented_items = [DocumentedItem(**item) for item in data["documented_items"]]
+    
+    return FileDocumentationResponse(
+        file_name=data["file_name"],
+        documented_items=documented_items,
+        total_items=data["total_items"],
+        success=data["success"],
+        message=data["message"]
+    )
 
-@router.post("/files/{file_id}/search", response_model=SearchResultsResponseModel)
-async def search_code(
-    file_id: str,
-    query: SearchQueryModel,
+@router.get("/projects/{project_id}/documentation", response_model=ProjectDocumentationResponse)
+async def get_project_documentation(
+    project_id: str,
     current_user = Depends(get_current_user),
     db = Depends(get_db)
 ):
-    """
-    Search for code elements in a file using AST-based context.
+    """Retrieve stored documentation for all files in a project."""
+    data = await get_project_documentation_data(project_id, db)
     
-    This endpoint allows searching for functions, classes, and variables
-    and returns contextual information about matches.
-    """
-    return await search_code_context(file_id, query.query, db)
+    # Convert to proper response model
+    documented_files = []
+    for file_data in data["documented_files"]:
+        documented_items = [DocumentedItem(**item) for item in file_data["documented_items"]]
+        file_response = FileDocumentationResponse(
+            file_name=file_data["file_name"],
+            documented_items=documented_items,
+            total_items=file_data["total_items"],
+            success=file_data["success"],
+            message=file_data["message"]
+        )
+        documented_files.append(file_response)
+    
+    return ProjectDocumentationResponse(
+        project_name=data["project_name"],
+        documented_files=documented_files,
+        total_files=data["total_files"],
+        total_items=data["total_items"],
+        success=data["success"],
+        message=data["message"]
+    )
+
+@router.get("/files/{file_id}/documentation/export")
+async def export_file_documentation(
+    file_id: str,
+    format: str = Query(default="markdown", regex="^(markdown|json|txt)$"),
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """Export file documentation in various formats."""
+    content, media_type, filename = await export_file_documentation_content(file_id, format, db)
+    
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )

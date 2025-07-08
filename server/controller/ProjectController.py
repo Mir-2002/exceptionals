@@ -7,6 +7,7 @@ from typing import List
 from fastapi import Depends, HTTPException, UploadFile
 from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
 from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ZipUploadResponseModel
+from server.controller.FileController import DEFAULT_EXCLUDED_FOLDERS
 from utils.zip_parser import extract_and_process_zip
 from utils.db import get_db, get_transaction_session
 from bson import ObjectId
@@ -37,10 +38,6 @@ DEFAULT_EXCLUDED_CLASSES = [
     "*TestCase",  # Test case classes
     "_*",  # Private classes
 ]
-
-# Configure file storage
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def matches_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a name matches any of the given patterns."""
@@ -272,7 +269,7 @@ async def update(project_id: str, project_update: ProjectUpdateModel, db=Depends
         raise HTTPException(status_code=500, detail=f"Error updating project: {str(e)}")
     
 async def remove(project_id: str, db=Depends(get_db)):
-    """Delete a project by its ID with transaction support if available."""
+    """Delete a project by its ID - database-only version."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID format")
     
@@ -285,7 +282,7 @@ async def remove(project_id: str, db=Depends(get_db)):
         if not existing_project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Query files using string format to match how they're stored (outside transaction)
+        # Query files using ObjectId to match how they're stored (outside transaction)
         files = await db.files.find({"project_id": project_id_obj}).to_list(length=None)
         
         # Delete with transaction if available
@@ -325,23 +322,7 @@ async def remove(project_id: str, db=Depends(get_db)):
                     if file_result.deleted_count > 0:
                         deleted_file_count += 1
         
-        # Now delete files from filesystem (after successful database operations)
-        for file in files:
-            if "file_path" in file and os.path.exists(file["file_path"]):
-                try:
-                    os.remove(file["file_path"])
-                except Exception as e:
-                    logger.warning(f"Could not delete file {file['file_path']}: {e}")
-        
-        # Delete the entire project directory
-        project_dir = os.path.join(UPLOAD_DIR, str(project_id))
-        if os.path.exists(project_dir):
-            try:
-                import shutil
-                shutil.rmtree(project_dir)
-                logger.info(f"Removed project directory: {project_dir}")
-            except Exception as e:
-                logger.warning(f"Could not delete project directory {project_dir}: {e}")
+        # No file system cleanup needed for database-only storage
         
         prepared_project = prepare_document_for_response(existing_project)
         logger.info(f"Deleted project: {existing_project.get('name', project_id)}")
@@ -620,8 +601,7 @@ async def get_project_exclusions(project_id: str, db=Depends(get_db)):
 
 async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(get_db)):
     """
-    Upload and extract a ZIP file containing a project structure.
-    Uses transactions when available.
+    Upload and extract a ZIP file containing a project structure - database-only version.
     """
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
@@ -637,65 +617,21 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
     if not zip_file.filename or not zip_file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
-    # Set up project directory
-    project_dir = os.path.join(UPLOAD_DIR, project_id)
-
     try:
-        # Process the ZIP file (outside transaction - filesystem operation)
-        file_metadata_list = await extract_and_process_zip(
-            zip_file, project_id, project_dir
-        )
+        # Process the ZIP file (database-only storage)
+        file_metadata_list = await extract_and_process_zip(zip_file, project_id, db)
 
-        # Insert files with transaction if available
-        inserted_files = []
-        processed_count = 0
+        # Update project stats
+        processed_count = sum(1 for file_info in file_metadata_list if file_info.processed)
         
-        async with get_transaction_session(f"Upload ZIP to project {project_id}") as session:
-            for metadata in file_metadata_list:
-                if 'project_id' in metadata and isinstance(metadata['project_id'], str):
-                    metadata['project_id'] = project_id_obj
-                
-                # Create file document
-                file_doc = FileModel(**metadata)
-                file_dict = file_doc.model_dump(by_alias=True)
-                
-                # Insert with or without transaction
-                if session:
-                    # With transaction
-                    result = await db.files.insert_one(file_dict, session=session)
-                    
-                    # Get the created file
-                    created_file = await db.files.find_one(
-                        {"_id": result.inserted_id}, 
-                        session=session
-                    )
-                else:
-                    # Without transaction
-                    result = await db.files.insert_one(file_dict)
-                    
-                    # Get the created file
-                    created_file = await db.files.find_one({"_id": result.inserted_id})
-
-                # Track processed files
-                if metadata["processed"]:
-                    processed_count += 1
-
-                if created_file:
-                    # Use the helper function instead of manual conversion
-                    prepared_file = prepare_document_for_response(created_file)
-                    inserted_files.append(FileResponseModel(**prepared_file))
-
-            # Update project stats
+        async with get_transaction_session(f"Update project stats for ZIP upload {project_id}") as session:
             if session:
                 # With transaction
                 await db.projects.update_one(
                     {"_id": project_id_obj},
                     {
-                        "$set": {
-                            "file_count": len(inserted_files),
-                            "processed_files": processed_count,
-                            "updated_at": datetime.now(timezone.utc),
-                        }
+                        "$inc": {"file_count": len(file_metadata_list)},
+                        "$set": {"updated_at": datetime.now(timezone.utc)},
                     },
                     session=session
                 )
@@ -704,29 +640,17 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
                 await db.projects.update_one(
                     {"_id": project_id_obj},
                     {
-                        "$set": {
-                            "file_count": len(inserted_files),
-                            "processed_files": processed_count,
-                            "updated_at": datetime.now(timezone.utc),
-                        }
+                        "$inc": {"file_count": len(file_metadata_list)},
+                        "$set": {"updated_at": datetime.now(timezone.utc)},
                     }
                 )
 
-        logger.info(f"Uploaded ZIP with {len(inserted_files)} files to project {project_id}")
+        logger.info(f"Uploaded ZIP with {len(file_metadata_list)} files to project {project_id}")
         return ZipUploadResponseModel(
-            message=f"Successfully uploaded and processed {len(inserted_files)} files ({processed_count} Python files processed)",
+            message=f"Successfully uploaded and processed {len(file_metadata_list)} files ({processed_count} Python files processed)",
             processed_count=processed_count,
-            total_files=len(inserted_files),
-            files=[
-                FileUploadInfo(
-                    id=str(file.id),
-                    file_name=file.file_name,
-                    relative_path=getattr(file, "relative_path", file.file_name),
-                    size=file.size,
-                    processed=file.processed,
-                )
-                for file in inserted_files
-            ],
+            total_files=len(file_metadata_list),
+            files=file_metadata_list
         )
 
     except HTTPException as http_ex:

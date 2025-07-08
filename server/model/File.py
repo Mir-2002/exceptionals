@@ -31,18 +31,23 @@ class ClassInfo(BaseModel):
     inherited_exclusion: bool = False
 
 class FileUploadInfo(BaseModel):
-    id: str
     file_name: str
-    relative_path: str
+    file_path: str  # This will be relative_path for response info
     size: int
     processed: bool
+
+    model_config = {
+        "json_encoders": {
+            ObjectId: str,
+            PyObjectId: str
+        }
+    }
 
 class ZipUploadResponseModel(BaseModel):
     message: str
     processed_count: int
     total_files: int
-    files: List[FileUploadInfo]
-
+    files: List[FileUploadInfo]  # Updated to match the corrected model
 class FileStructure(BaseModel):
     file_name: str
     classes: List[ClassInfo] = []
@@ -53,19 +58,40 @@ class FileModel(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     project_id: PyObjectId
     file_name: str
-    file_path: str # Path on server
+    content: str  # Add this field for database-only storage
+    file_path: Optional[str] = None  # Keep optional for backward compatibility
     content_type: str
     size: int
-    relative_path: Optional[str] = None # Path in project
+    relative_path: Optional[str] = None  # Path in project
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))  # Add this
     processed: bool = False
     structure: Optional[Dict[str, Any]] = None
     excluded_classes: List[str] = []
     excluded_functions: List[str] = []
+    documented: bool = False  # Add this field
     documented_content: Optional[str] = None
     documented_at: Optional[datetime] = None
+    documented_items_count: Optional[int] = 0  # Add this field
+    has_documentation: bool = False
+    documentation_id: Optional[PyObjectId] = None  # Reference to FileDocumentation
+    last_documented_at: Optional[datetime] = None
+    
+    MAX_FILE_SIZE: ClassVar[int] = 100 * 1024 * 1024  # 100 MB
 
-    MAX_FILE_SIZE : ClassVar[int] = 100 * 1024 * 1024  # 100 MB
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        """Validate file content."""
+        if not value.strip():
+            raise ValueError("File content cannot be empty or whitespace.")
+        
+        # Check if content size exceeds limit
+        content_size = len(value.encode('utf-8'))
+        if content_size > cls.MAX_FILE_SIZE:
+            raise ValueError(f"File content exceeds maximum allowed size of {cls.MAX_FILE_SIZE/(1024*1024)}MB.")
+        
+        return value
 
     @field_validator("file_name")
     @classmethod
@@ -117,6 +143,10 @@ class FileResponseModel(BaseModel):
     size: int
     relative_path: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    documented: bool = False
+    documented_at: Optional[datetime] = None  # Add this
+    documented_items_count: Optional[int] = 0  # Add this
     processed: bool = False
     file_path: Optional[str] = None
     content_type: Optional[str] = None
@@ -200,3 +230,34 @@ class FileStructureResponse(BaseModel):
     file_id: str
     file_name: str
     structure: Dict[str, Any]
+
+class DocumentationItem(BaseModel):
+    """Individual documentation item (function, class, method)."""
+    item_id: str = Field(default_factory=lambda: str(ObjectId()))  # Unique ID for this item
+    item_type: str  # "function", "class", "method"
+    item_name: str  # e.g., "calculate_sum", "Calculator", "Calculator.add"
+    original_code: str
+    generated_docstring: str
+    documented_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    ai_model_used: Optional[str] = "huggingface"
+    generation_success: bool = True
+    line_number: Optional[int] = None
+    end_line_number: Optional[int] = None
+
+class FileDocumentation(BaseModel):
+    """Complete file documentation."""
+    file_id: PyObjectId
+    project_id: PyObjectId
+    file_name: str
+    documentation_items: List[DocumentationItem] = []
+    total_items: int = 0
+    documented_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    documentation_complete: bool = False
+    generated_by: Optional[PyObjectId] = None  # User who generated it
+    
+    # Summary statistics
+    total_functions: int = 0
+    total_classes: int = 0
+    total_methods: int = 0
+    success_rate: float = 1.0  # Percentage of successful generations
+
