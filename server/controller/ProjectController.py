@@ -7,6 +7,7 @@ from typing import List
 from fastapi import Depends, HTTPException, UploadFile
 from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
 from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ZipUploadResponseModel
+from server.controller.FileController import DEFAULT_EXCLUDED_FOLDERS
 from utils.zip_parser import extract_and_process_zip
 from utils.db import get_db, get_transaction_session
 from bson import ObjectId

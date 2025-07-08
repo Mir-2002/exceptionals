@@ -73,7 +73,10 @@ class FileModel(BaseModel):
     documented_content: Optional[str] = None
     documented_at: Optional[datetime] = None
     documented_items_count: Optional[int] = 0  # Add this field
-
+    has_documentation: bool = False
+    documentation_id: Optional[PyObjectId] = None  # Reference to FileDocumentation
+    last_documented_at: Optional[datetime] = None
+    
     MAX_FILE_SIZE: ClassVar[int] = 100 * 1024 * 1024  # 100 MB
 
     @field_validator("content")
@@ -227,3 +230,34 @@ class FileStructureResponse(BaseModel):
     file_id: str
     file_name: str
     structure: Dict[str, Any]
+
+class DocumentationItem(BaseModel):
+    """Individual documentation item (function, class, method)."""
+    item_id: str = Field(default_factory=lambda: str(ObjectId()))  # Unique ID for this item
+    item_type: str  # "function", "class", "method"
+    item_name: str  # e.g., "calculate_sum", "Calculator", "Calculator.add"
+    original_code: str
+    generated_docstring: str
+    documented_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    ai_model_used: Optional[str] = "huggingface"
+    generation_success: bool = True
+    line_number: Optional[int] = None
+    end_line_number: Optional[int] = None
+
+class FileDocumentation(BaseModel):
+    """Complete file documentation."""
+    file_id: PyObjectId
+    project_id: PyObjectId
+    file_name: str
+    documentation_items: List[DocumentationItem] = []
+    total_items: int = 0
+    documented_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    documentation_complete: bool = False
+    generated_by: Optional[PyObjectId] = None  # User who generated it
+    
+    # Summary statistics
+    total_functions: int = 0
+    total_classes: int = 0
+    total_methods: int = 0
+    success_rate: float = 1.0  # Percentage of successful generations
+
