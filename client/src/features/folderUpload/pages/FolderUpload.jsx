@@ -1,21 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import { filesAPI, projectsAPI } from '../../../shared/services/api';
 
-const FileUpload = () => {
+const FolderUpload = () => {
   const navigate = useNavigate();
   const apiUrl = import.meta.env.VITE_API_ENDPOINT || "http://localhost:5000";
   
   const [skipItems, setSkipItems] = useState([]);
   const [inputValue, setInputValue] = useState("");
-  const [fileError, setFileError] = useState("");
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [projectName, setProjectName] = useState("");
+  const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-  const [processingStep, setProcessingStep] = useState(1); // 1: Upload, 2: Processing, 3: Complete
+  const [fileCount, setFileCount] = useState({ total: 0, python: 0 });
+  const [projectName, setProjectName] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [processingStep, setProcessingStep] = useState(1); // 1: Upload, 2: Selection, 3: Processing, 4: Complete
   const [processingProgress, setProcessingProgress] = useState(0);
-  const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   const handleAddItem = (e) => {
     e.preventDefault();
@@ -29,51 +30,70 @@ const FileUpload = () => {
     setSkipItems(skipItems.filter((skipItem) => skipItem !== item));
   };
 
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    setFileError("");
+  const handleFolderSelect = (e) => {
+    const files = e.target.files;
+    let totalCount = files.length;
+    let pythonCount = 0;
+    const pythonFiles = [];
+
+    for (let i = 0; i < files.length; i++) {
+      if (files[i].name.endsWith('.py')) {
+        pythonCount++;
+        pythonFiles.push({
+          name: files[i].name,
+          path: files[i].webkitRelativePath,
+          size: files[i].size,
+          selected: true // Initially selected
+        });
+      }
+    }
+
+    setFileCount({ total: totalCount, python: pythonCount });
+    setSelectedFiles(pythonFiles);
     
-    if (!file) {
-      setSelectedFile(null);
-      return;
+    // Try to extract project name from the folder name
+    if (files.length > 0) {
+      const folderName = files[0].webkitRelativePath.split('/')[0];
+      setProjectName(folderName);
     }
     
-    // Check if file is a Python file
-    if (!file.name.endsWith('.py')) {
-      setFileError("Only Python (.py) files are allowed");
-      setSelectedFile(null);
-      return;
+    if (pythonCount === 0) {
+      setUploadError("No Python files found in the selected folder");
+    } else {
+      setUploadError("");
     }
-    
-    setSelectedFile(file);
-    
-    // Auto-generate project name from filename (without .py extension)
-    if (!projectName) {
-      setProjectName(file.name.replace('.py', ''));
-    }
+  };
+
+  const toggleFileSelection = (filePath) => {
+    setSelectedFiles(prevFiles => 
+      prevFiles.map(file => 
+        file.path === filePath 
+          ? { ...file, selected: !file.selected } 
+          : file
+      )
+    );
   };
 
   const handleContinue = (e) => {
     e.preventDefault();
-    
-    if (!selectedFile) {
-      setFileError("Please select a Python file");
+    if (fileCount.python === 0) {
+      setUploadError("Please select a folder with Python files");
       return;
     }
     
     if (!projectName.trim()) {
-      setFileError("Please enter a project name");
+      setUploadError("Please enter a project name");
       return;
     }
     
-    handleFileUpload();
+    setProcessingStep(2);
   };
 
-  const handleFileUpload = async () => {
+  const handleFolderUpload = async () => {
     setProcessingStep(2);
     setProcessingProgress(10);
     setIsUploading(true);
-
+  
     try {
       // Create a new project first
       const projectResponse = await projectsAPI.createProject({ 
@@ -83,10 +103,18 @@ const FileUpload = () => {
       const projectId = projectResponse.data.id;
       setProcessingProgress(30);
       
-      // Then upload the file to that project
-      const uploadResponse = await filesAPI.uploadFile(
+      // Prepare files for upload
+      const formData = new FormData();
+      
+      // Add all files from the folder
+      for (const file of selectedFiles) {
+        formData.append('files', file);
+      }
+      
+      // Use ZIP file upload since we're dealing with multiple files
+      const uploadResponse = await filesAPI.uploadZipFile(
         projectId, 
-        selectedFile,
+        formData,
         (progress) => {
           // Update progress based on upload status
           setProcessingProgress(30 + Math.round(progress * 0.5));
@@ -99,8 +127,8 @@ const FileUpload = () => {
       // Store project ID for later use
       localStorage.setItem('lastProjectId', projectId);
     } catch (error) {
-      console.error("Error uploading file:", error);
-      setFileError("Error uploading file: " + (error.response?.data?.message || "Please try again."));
+      console.error("Error uploading folder:", error);
+      setFolderError("Error uploading folder: " + (error.response?.data?.message || "Please try again."));
       setProcessingStep(1);
     } finally {
       setIsUploading(false);
@@ -121,11 +149,11 @@ const FileUpload = () => {
                     className="flex flex-col items-center justify-center space-y-8"
                   >
                     <h1 className="text-3xl md:text-[2.5rem] font-bold font-funnel-display text-sky-700 text-center">
-                      Upload Your Python File
+                      Upload Your Python Project
                     </h1>
                     
                     <p className="text-gray-600 text-center">
-                      Upload a single Python file for documentation and analysis.
+                      Upload an entire folder of Python files to be analyzed together as a project.
                     </p>
                     
                     <div className="w-full">
@@ -145,70 +173,61 @@ const FileUpload = () => {
                     
                     <div className="w-full border-2 border-dashed border-sky-300 rounded-lg p-6 text-center hover:border-sky-500 transition-colors duration-200">
                       <input
-                        ref={fileInputRef}
+                        ref={folderInputRef}
                         type="file"
-                        id="file"
-                        name="file"
+                        id="folder"
+                        name="folder"
                         accept=".py"
-                        onChange={handleFileChange}
+                        webkitdirectory="true"
+                        directory="true"
+                        multiple
+                        onChange={handleFolderSelect}
                         className="hidden"
                       />
                       
                       <div 
-                        onClick={() => fileInputRef.current.click()}
+                        onClick={() => folderInputRef.current.click()}
                         className="cursor-pointer"
                       >
-                        {!selectedFile ? (
-                          <>
-                            <div className="mb-4 flex justify-center">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                            </div>
-                            <p className="font-medium text-sky-700">
-                              Click to select a Python file
-                            </p>
-                          </>
-                        ) : (
-                          <div className="p-3 bg-sky-50 rounded-lg text-left">
-                            <div className="flex items-center">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-sky-500 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                              <div>
-                                <p className="font-medium text-sky-700">{selectedFile.name}</p>
-                                <p className="text-xs text-gray-500">{(selectedFile.size / 1024).toFixed(1)} KB</p>
-                              </div>
-                            </div>
-                            <button 
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation(); 
-                                setSelectedFile(null);
-                                fileInputRef.current.value = null;
-                              }}
-                              className="mt-2 text-sm text-red-500 hover:text-red-700"
-                            >
-                              Remove file
-                            </button>
-                          </div>
-                        )}
+                        <div className="mb-4 flex justify-center">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11v6m-3-3h6" />
+                          </svg>
+                        </div>
+                        <p className="font-medium text-sky-700">
+                          Click to select a project folder
+                        </p>
+                        <p className="text-sm text-gray-500 mt-1">
+                          All .py files will be processed
+                        </p>
                       </div>
+                      
+                      {fileCount.total > 0 && (
+                        <div className="mt-4 p-3 bg-sky-50 rounded-lg text-left">
+                          <p className="text-sm text-sky-800">
+                            <span className="font-medium">Selected folder:</span> {folderInputRef.current?.files[0]?.webkitRelativePath.split('/')[0]}
+                          </p>
+                          <p className="text-sm text-sky-800">
+                            <span className="font-medium">Files found:</span> {fileCount.total} total, {fileCount.python} Python files
+                          </p>
+                        </div>
+                      )}
                     </div>
-                    
-                    {fileError && (
-                      <p className="text-red-500 text-center">{fileError}</p>
-                    )}
                     
                     <button
                       type="submit"
-                      disabled={isUploading || !selectedFile}
+                      disabled={isUploading || fileCount.python === 0 || !projectName.trim()}
                       className={`bg-yellow-400 text-sky-700 px-5 py-3 rounded-lg font-medium w-full
                                 transform hover:scale-105 transition duration-300 ease-in-out hover:bg-yellow-500 
-                                hover:shadow-lg ${(isUploading || !selectedFile) ? "opacity-50 cursor-not-allowed" : ""}`}
+                                hover:shadow-lg ${(isUploading || fileCount.python === 0 || !projectName.trim()) ? "opacity-50 cursor-not-allowed" : ""}`}
                     >
-                      Upload and Process
+                      Continue
                     </button>
+                    
+                    {uploadError && (
+                      <p className="text-red-500 text-center">{uploadError}</p>
+                    )}
                   </form>
                 </div>
               </section>
@@ -267,10 +286,80 @@ const FileUpload = () => {
           </>
         );
         
-      case 2: // Processing
+      case 2: // File Selection View
+        return (
+          <div className="container mx-auto px-6 py-10 max-w-4xl">
+            <h1 className="text-3xl font-bold text-sky-700 mb-6">Select Python Files to Process</h1>
+            
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-sky-700 mb-2">Project: {projectName}</h2>
+                <p className="text-gray-600">
+                  Select which files to include in your documentation. Python files are selected by default.
+                </p>
+              </div>
+              
+              <div className="border rounded-lg overflow-hidden mb-6">
+                <div className="bg-gray-50 px-4 py-3 border-b">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-medium text-gray-700">Files</h3>
+                    <span className="text-sm text-gray-500">{selectedFiles.filter(f => f.selected).length} of {selectedFiles.length} selected</span>
+                  </div>
+                </div>
+                
+                <div className="max-h-96 overflow-y-auto">
+                  <ul className="divide-y divide-gray-200">
+                    {selectedFiles.map((file, index) => (
+                      <li key={index} className="px-4 py-3 hover:bg-gray-50">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={file.selected}
+                              onChange={() => toggleFileSelection(file.path)}
+                              className="h-4 w-4 text-sky-600 focus:ring-sky-500 border-gray-300 rounded"
+                            />
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 ml-3 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="ml-2 text-gray-700">{file.path}</span>
+                          </div>
+                          <span className="text-xs text-gray-500">
+                            {(file.size / 1024).toFixed(1)} KB
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              
+              <div className="flex justify-between">
+                <button
+                  onClick={() => setProcessingStep(1)}
+                  className="px-4 py-2 text-sky-700 border border-sky-300 rounded hover:bg-sky-50 transition-colors"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleFolderUpload}
+                  disabled={selectedFiles.filter(f => f.selected).length === 0}
+                  className={`bg-yellow-400 text-sky-700 px-5 py-2 rounded-lg font-medium
+                           hover:bg-yellow-500 transition-colors ${
+                             selectedFiles.filter(f => f.selected).length === 0 ? 'opacity-50 cursor-not-allowed' : ''
+                           }`}
+                >
+                  Process Selected Files
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+        
+      case 3: // Processing
         return (
           <div className="container mx-auto px-6 py-20 max-w-2xl text-center">
-            <h1 className="text-3xl font-bold text-sky-700 mb-10">Processing Your File</h1>
+            <h1 className="text-3xl font-bold text-sky-700 mb-10">Processing Your Project</h1>
             
             <div className="bg-white rounded-lg shadow-lg p-10">
               <div className="animate-pulse flex flex-col items-center mb-6">
@@ -280,7 +369,7 @@ const FileUpload = () => {
               </div>
               
               <p className="text-xl font-medium text-gray-700 mb-6">
-                Generating documentation for <span className="font-bold text-sky-700">{selectedFile?.name}</span>
+                Generating documentation for <span className="font-bold text-sky-700">{projectName}</span>
               </p>
               
               <div className="mb-4">
@@ -293,13 +382,13 @@ const FileUpload = () => {
               </div>
               
               <p className="text-gray-500">
-                This will only take a moment...
+                This may take a minute or two depending on the size of your project...
               </p>
             </div>
           </div>
         );
         
-      case 3: // Complete
+      case 4: // Complete
         return (
           <div className="container mx-auto px-6 py-20 max-w-2xl text-center">
             <h1 className="text-3xl font-bold text-sky-700 mb-10">Documentation Generated!</h1>
@@ -316,7 +405,7 @@ const FileUpload = () => {
               </p>
               
               <p className="text-gray-600 mb-8">
-                Your Python file has been analyzed and documented.
+                {selectedFiles.filter(f => f.selected).length} files were processed and documented.
               </p>
               
               <div className="flex flex-col md:flex-row justify-center space-y-4 md:space-y-0 md:space-x-4">
@@ -329,15 +418,14 @@ const FileUpload = () => {
                 <button
                   onClick={() => {
                     setProcessingStep(1);
-                    setSelectedFile(null);
+                    setFileCount({ total: 0, python: 0 });
+                    setSelectedFiles([]);
+                    folderInputRef.current.value = null;
                     setProjectName("");
-                    if (fileInputRef.current) {
-                      fileInputRef.current.value = null;
-                    }
                   }}
                   className="bg-white text-sky-700 border border-sky-300 px-5 py-3 rounded-lg font-medium hover:bg-sky-50 transition-colors"
                 >
-                  Upload Another File
+                  Upload Another Project
                 </button>
               </div>
             </div>
@@ -352,4 +440,4 @@ const FileUpload = () => {
   return renderStepContent();
 };
 
-export default FileUpload;
+export default FolderUpload;
