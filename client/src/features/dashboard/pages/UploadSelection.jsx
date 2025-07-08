@@ -41,11 +41,6 @@ const UploadSelection = () => {
           description="Upload your project folder. Option to skip specific directories and files."
           onClick={() => navigate("/folder-upload")}
         />
-        <Section
-          title="Using a Repository"
-          description="Paste a link to your GitHub repository. Option to choose a specific branch."
-          onClick={() => navigate("/repo-upload")}
-        />
       </main>
     </>
   );

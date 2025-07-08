@@ -2,14 +2,18 @@ import axios from 'axios';
 import { handleApiError } from '../utils/errorHandler';
 
 // Configure base API
-const API_URL = import.meta.env.VITE_API_ENDPOINT || "http://localhost:5000";
-let isBackendMissing = false;
+const API_URL = import.meta.env.VITE_API_ENDPOINT || "http://localhost:8000";
 
 // Create axios instance with base URL
 const api = axios.create({
     baseURL: API_URL,
-    timeout: 5000 // 5 second timeout to fail faster on connection issues
+    headers: {
+        'Content-Type': 'application/json'
+    }
 });
+
+// Debug: Log the API Base URL
+console.log('API Base URL:', import.meta.env.VITE_API_ENDPOINT);
 
 // Add request interceptor for auth token
 api.interceptors.request.use(
@@ -22,6 +26,17 @@ api.interceptors.request.use(
     },
     error => Promise.reject(error)
 );
+
+// Add request logging
+api.interceptors.request.use(config => {
+  console.log('🚀 API Request:', {
+    method: config.method,
+    url: config.baseURL + config.url,
+    data: config.data,
+    headers: config.headers
+  });
+  return config;
+});
 
 // Add response interceptor for global error handling
 api.interceptors.response.use(
@@ -107,51 +122,81 @@ api.interceptors.response.use(
 
 // Authentication API calls
 export const authAPI = {
-    login: (credentials) => api.post('/auth/login', credentials),
-    register: (userData) => api.post('/auth/register', userData),
-    getCurrentUser: () => api.get('/auth/me'),
-    githubLogin: (code) => {
-        return api.post('/auth/github/callback', { code });
-    },
-    logout: () => api.post('/auth/logout'),
-    getGitHubRepos: () => {
-        const githubToken = localStorage.getItem('githubToken');
-        return api.get('/github/repos', {
-            headers: {
-                'X-GitHub-Token': githubToken
-            }
-        });
-    },
-    refreshToken: (data) => {
-        return api.post('/auth/refresh-token', data);
+  register: async (userData) => {
+    const requestData = {
+      email: userData.email,
+      username: userData.username,
+      password: userData.password,
+      password_repeat: userData.password,
+      created_at: new Date().toISOString()
+    };
+    
+    const response = await api.post('/api/users', requestData, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    // Store email-username mapping in localStorage after successful registration
+    if (response.data) {
+      const emailToUsernameMap = JSON.parse(localStorage.getItem('emailToUsername') || '{}');
+      emailToUsernameMap[userData.email] = userData.username;
+      localStorage.setItem('emailToUsername', JSON.stringify(emailToUsernameMap));
     }
+    
+    return response;
+  },
+
+  login: async (credentials) => {
+    console.log('Login attempt with:', credentials);
+    
+    let usernameToSend = credentials.emailOrUsername;
+    
+    // Check if input looks like an email
+    if (credentials.emailOrUsername.includes('@')) {
+      // Try to find username from stored mapping
+      const emailToUsernameMap = JSON.parse(localStorage.getItem('emailToUsername') || '{}');
+      const storedUsername = emailToUsernameMap[credentials.emailOrUsername];
+      
+      if (storedUsername) {
+        usernameToSend = storedUsername;
+        console.log('Found stored username for email:', storedUsername);
+      } else {
+        // If no stored mapping, show helpful error
+        throw new Error('Please login with your username instead of email, or register first');
+      }
+    }
+    
+    const formData = new URLSearchParams();
+    formData.append('username', usernameToSend);
+    formData.append('password', credentials.password);
+    
+    console.log('Sending to backend:', {
+      username: usernameToSend,
+      password: '[hidden]'
+    });
+    
+    return api.post('/api/auth/login', formData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+  },
+  getCurrentUser: () => api.get('/api/users/me'),
+  logout: () => { 
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('githubToken'); 
+  }
 };
 
 // Project API calls
 export const projectsAPI = {
-    getAllProjects: async () => {
-        try {
-            if (isBackendMissing) {
-                // If we already know the backend is missing, don't even try to connect
-                return Promise.reject({ message: "Backend server not available" });
-            }
-            
-            const response = await api.get('/projects');
-            return response;
-        } catch (error) {
-            if (error.message === 'Network Error') {
-                // Remember that the backend is missing to avoid future requests
-                isBackendMissing = true;
-                console.log("Backend server not available, consider implementing mock data");
-            }
-            throw error;
-        }
-    },
-    getProjectById: (id) => api.get(`/projects/${id}`),
-    createProject: (projectData) => api.post('/projects', projectData),
-    updateProject: (id, projectData) => api.put(`/projects/${id}`, projectData),
-    deleteProject: (id) => api.delete(`/projects/${id}`),
-    getProjectStructure: (id) => api.get(`/projects/${id}/structure`),
+    getProjects: () => api.get('/api/projects'),  
+    getProject: (id) => api.get(`/api/projects/${id}`),  
+    createProject: (data) => api.post('/api/projects', data),  
+    updateProject: (id, data) => api.put(`/api/projects/${id}`, data),  
+    deleteProject: (id) => api.delete(`/api/projects/${id}`)  
 };
 
 // File API calls
@@ -160,88 +205,59 @@ export const filesAPI = {
         const formData = new FormData();
         formData.append('file', file);
         
-        return api.post(`/files?projectId=${projectId}`, formData, {
+        return api.post(`/api/projects/${projectId}/files`, formData, {  
             headers: { 'Content-Type': 'multipart/form-data' },
-            onUploadProgress: progressEvent => {
-                if (onProgress) {
-                    const percentCompleted = Math.round(
-                        (progressEvent.loaded * 100) / progressEvent.total
-                    );
-                    onProgress(percentCompleted);
-                }
-            }
+            onUploadProgress: onProgress
         });
     },
-    getFileById: (id) => api.get(`/files/${id}`),
-    getFileStructure: (id) => api.get(`/files/${id}/structure`),
-    deleteFile: (id) => api.delete(`/files/${id}`),
-    getFilesByProjectId: (projectId) => api.get(`/projects/${projectId}/files`),
-    getFileContent: (id) => api.get(`/files/${id}/content`),
-    uploadZipFile: (projectId, zipFile, onProgress) => {
-        const formData = new FormData();
-        formData.append('file', zipFile);
-        
-        return api.post(`/files/zip?projectId=${projectId}`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-            onUploadProgress: progressEvent => {
-                if (onProgress) {
-                    const percentCompleted = Math.round(
-                        (progressEvent.loaded * 100) / progressEvent.total
-                    );
-                    onProgress(percentCompleted);
-                }
-            }
-        });
-    },
-    // Add this new method for folder uploads
-    uploadFolderWithProgress: (projectId, files, onProgress) => {
-        const formData = new FormData();
-        
-        // Append each file to the form data
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            // Use the file's path to preserve folder structure
-            formData.append('files', file, file.webkitRelativePath || file.name);
-        }
-        
-        return api.post(`/files/folder?projectId=${projectId}`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-            onUploadProgress: progressEvent => {
-                if (onProgress) {
-                    const percentCompleted = Math.round(
-                        (progressEvent.loaded * 100) / progressEvent.total
-                    );
-                    onProgress(percentCompleted);
-                }
-            }
-        });
-    },
-    // Add method for repository uploads
+    getFileById: (id) => api.get(`/api/files/${id}`),  
+    getFileStructure: (id) => api.get(`/api/files/${id}/structure`),  
+    deleteFile: (id) => api.delete(`/api/files/${id}`),  
+    getFilesByProjectId: (projectId) => api.get(`/api/projects/${projectId}/files`),  
+    getFileContent: (id) => api.get(`/api/files/${id}/content`),  
+    
+    // Remove GitHub repository import logic
     processRepository: (projectId, { url, branch, onProgress }) => {
-        return api.post(`/projects/${projectId}/repository`, { url, branch }, {
-            onUploadProgress: progressEvent => {
-                if (onProgress) {
-                    const percentCompleted = Math.round(
-                        (progressEvent.loaded * 100) / progressEvent.total
-                    );
-                    onProgress(percentCompleted);
-                }
-            }
+        // Only direct URL processing
+        return api.post(`/api/projects/${projectId}/repository`, { url, branch }, {
+            onUploadProgress: onProgress,
         });
-    }
+    },
 };
 
-// Documentation API
+// Documentation API calls
 export const docsAPI = {
-  getDocumentation: (projectId) => api.get(`/projects/${projectId}/documentation`),
-  getFileDocumentation: (fileId) => api.get(`/files/${fileId}/documentation`),
-  generateDocumentation: (projectId) => api.post(`/projects/${projectId}/documentation/generate`),
-  updateDocumentation: (fileId, data) => api.put(`/files/${fileId}/documentation`, data),
+  getDocumentation: (projectId) => api.get(`/api/projects/${projectId}/documentation`),          
+  getFileDocumentation: (fileId) => api.get(`/api/files/${fileId}/documentation`),              
+  generateDocumentation: (projectId) => api.post(`/api/projects/${projectId}/documentation/generate`), 
+  updateDocumentation: (fileId, data) => api.put(`/api/files/${fileId}/documentation`, data),   
   exportDocumentation: (projectId, format) => 
-    api.get(`/projects/${projectId}/documentation/export`, { 
+    api.get(`/api/projects/${projectId}/documentation/export`, {                                
       params: { format },
-      responseType: 'blob' // Important for file downloads
+      responseType: 'blob'
     }),
 };
+
+export const setAuthToken = (token) => {
+  if (token) {
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common['Authorization'];
+  }
+};
+
+// Add request interceptor to automatically add token
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
 
 export default api;

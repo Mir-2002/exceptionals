@@ -23,20 +23,6 @@ DEFAULT_EXCLUDED_FILES = [
     "*_test.py",
 ]
 
-# Default directory exclusions
-DEFAULT_EXCLUDED_FOLDERS = [
-    "__pycache__",
-    ".git",
-    ".github",
-    "tests",
-    "test",
-    "docs",
-    "venv",
-    ".venv",
-    "env",
-    "node_modules",
-]
-
 # Default patterns for functions to exclude
 DEFAULT_EXCLUDED_FUNCTIONS = [
     "test_*",  # Test functions
