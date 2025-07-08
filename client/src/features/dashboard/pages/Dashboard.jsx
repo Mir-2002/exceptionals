@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { projectsAPI } from '../../../shared/services/api';
 
 const Dashboard = () => {
@@ -8,6 +8,14 @@ const Dashboard = () => {
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
+
+  {/* Add Create Project Modal state */}
+  const [showCreateModal, setShowCreateModal] = useState(false);
+
+  // Add this state
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  const navigate = useNavigate();
 
   useEffect(() => {
     let isMounted = true;
@@ -66,21 +74,39 @@ const Dashboard = () => {
     }
   };
 
+  // Update handleCreateProject
+  const handleCreateProject = async (projectData) => {
+    try {
+      setCreatingProject(true);
+      const response = await projectsAPI.createProject(projectData);
+      const newProject = response.data;
+      
+      // Navigate to project details page
+      navigate(`/project/${newProject.id}`);
+      
+      // Refresh projects list
+      setProjects([...projects, newProject]);
+    } catch (error) {
+      console.error('Failed to create project:', error);
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8">
         <h1 className="text-3xl font-bold text-gray-800 mb-4 md:mb-0">Your Projects</h1>
-        
-        <Link 
-          to="/upload-selection"
+        <button 
+          onClick={() => setShowCreateModal(true)}
           className="bg-yellow-400 hover:bg-yellow-500 text-sky-800 font-semibold px-8 py-2.5 rounded-lg 
                    transition-all duration-300 transform hover:scale-105 hover:shadow-md flex items-center justify-center"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
           </svg>
-          Upload
-        </Link>
+          Create Project
+        </button>
       </div>
       
       {/* Search and filter */}
@@ -175,17 +201,91 @@ const Dashboard = () => {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
           </svg>
           <h3 className="mt-4 text-xl font-medium text-gray-900">No projects yet</h3>
-          <p className="mt-1 text-gray-500">Start by uploading your first project to get documentation generated</p>
+          <p className="mt-1 text-gray-500">Start by creating your first project to get documentation generated</p>
           <div className="mt-6">
-            <Link 
-              to="/upload-selection"
+            <button 
+              onClick={() => setShowCreateModal(true)}
               className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none"
             >
               <svg className="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
               </svg>
               Create your first project
-            </Link>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create Project Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <h2 className="text-xl font-bold mb-4">Create New Project</h2>
+            
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.target);
+              const projectData = {
+                name: formData.get('name'),
+                description: formData.get('description'),
+                type: formData.get('type')
+              };
+              handleCreateProject(projectData);
+              setShowCreateModal(false);
+            }}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Project Name
+                </label>
+                <input
+                  type="text"
+                  name="name"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  required
+                />
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Description
+                </label>
+                <textarea
+                  name="description"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  rows="3"
+                />
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Project Type
+                </label>
+                <select
+                  name="type"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="single_file">Single File</option>
+                  <option value="zip_file">ZIP File</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingProject}
+                  className="px-4 py-2 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50"
+                >
+                  {creatingProject ? 'Creating...' : 'Create Project'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

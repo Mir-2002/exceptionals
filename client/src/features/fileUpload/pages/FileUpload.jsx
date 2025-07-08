@@ -1,21 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { filesAPI, projectsAPI } from '../../../shared/services/api';
 
 const FileUpload = () => {
   const navigate = useNavigate();
+  const { id: projectId } = useParams(); // Get project ID from URL
   const apiUrl = import.meta.env.VITE_API_ENDPOINT || "http://localhost:5000";
   
+  const [project, setProject] = useState(null); // Add project state
   const [skipItems, setSkipItems] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [fileError, setFileError] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
-  const [projectName, setProjectName] = useState("");
   const [isUploading, setIsUploading] = useState(false);
-  const [processingStep, setProcessingStep] = useState(1); // 1: Upload, 2: Processing, 3: Complete
+  const [processingStep, setProcessingStep] = useState(1);
   const [processingProgress, setProcessingProgress] = useState(0);
   const fileInputRef = useRef(null);
+
+  // Fetch project details on component mount
+  useEffect(() => {
+    const fetchProject = async () => {
+      try {
+        const response = await projectsAPI.getProjectById(projectId);
+        setProject(response.data);
+      } catch (error) {
+        console.error('Error fetching project:', error);
+        navigate('/dashboard'); // Redirect if project not found
+      }
+    };
+
+    if (projectId) {
+      fetchProject();
+    }
+  }, [projectId, navigate]);
 
   const handleAddItem = (e) => {
     e.preventDefault();
@@ -39,30 +57,20 @@ const FileUpload = () => {
     }
     
     // Check if file is a Python file
-    if (!file.name.endsWith('.py')) {
-      setFileError("Only Python (.py) files are allowed");
+    if (!file.name.endsWith('.py') && !file.name.endsWith('.zip')) {
+      setFileError("Only Python (.py) and ZIP (.zip) files are allowed");
       setSelectedFile(null);
       return;
     }
     
     setSelectedFile(file);
-    
-    // Auto-generate project name from filename (without .py extension)
-    if (!projectName) {
-      setProjectName(file.name.replace('.py', ''));
-    }
   };
 
   const handleContinue = (e) => {
     e.preventDefault();
     
     if (!selectedFile) {
-      setFileError("Please select a Python file");
-      return;
-    }
-    
-    if (!projectName.trim()) {
-      setFileError("Please enter a project name");
+      setFileError("Please select a Python file or ZIP archive");
       return;
     }
     
@@ -75,20 +83,11 @@ const FileUpload = () => {
     setIsUploading(true);
 
     try {
-      // Create a new project first
-      const projectResponse = await projectsAPI.createProject({ 
-        name: projectName 
-      });
-      
-      const projectId = projectResponse.data.id;
-      setProcessingProgress(30);
-      
-      // Then upload the file to that project
+      // Upload file to existing project (don't create new project)
       const uploadResponse = await filesAPI.uploadFile(
-        projectId, 
+        projectId, // Use existing project ID
         selectedFile,
         (progress) => {
-          // Update progress based on upload status
           setProcessingProgress(30 + Math.round(progress * 0.5));
         }
       );
@@ -96,8 +95,6 @@ const FileUpload = () => {
       setProcessingProgress(100);
       setProcessingStep(3);
       
-      // Store project ID for later use
-      localStorage.setItem('lastProjectId', projectId);
     } catch (error) {
       console.error("Error uploading file:", error);
       setFileError("Error uploading file: " + (error.response?.data?.message || "Please try again."));
@@ -121,27 +118,12 @@ const FileUpload = () => {
                     className="flex flex-col items-center justify-center space-y-8"
                   >
                     <h1 className="text-3xl md:text-[2.5rem] font-bold font-funnel-display text-sky-700 text-center">
-                      Upload Your Python File
+                      Upload Files to {project?.name}
                     </h1>
                     
                     <p className="text-gray-600 text-center">
-                      Upload a single Python file for documentation and analysis.
+                      Upload files for your project: <span className="font-medium text-sky-700">{project?.name}</span>
                     </p>
-                    
-                    <div className="w-full">
-                      <label htmlFor="projectName" className="block text-sm font-medium text-gray-700 mb-2">
-                        Project Name
-                      </label>
-                      <input
-                        type="text"
-                        id="projectName"
-                        value={projectName}
-                        onChange={(e) => setProjectName(e.target.value)}
-                        className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                        placeholder="Enter project name"
-                        required
-                      />
-                    </div>
                     
                     <div className="w-full border-2 border-dashed border-sky-300 rounded-lg p-6 text-center hover:border-sky-500 transition-colors duration-200">
                       <input
@@ -149,7 +131,7 @@ const FileUpload = () => {
                         type="file"
                         id="file"
                         name="file"
-                        accept=".py"
+                        accept=".py,.zip"
                         onChange={handleFileChange}
                         className="hidden"
                       />
@@ -166,7 +148,10 @@ const FileUpload = () => {
                               </svg>
                             </div>
                             <p className="font-medium text-sky-700">
-                              Click to select a Python file
+                              Click to select Python files or ZIP
+                            </p>
+                            <p className="text-sm text-gray-500 mt-1">
+                              Supports .py files and .zip archives
                             </p>
                           </>
                         ) : (
@@ -207,7 +192,7 @@ const FileUpload = () => {
                                 transform hover:scale-105 transition duration-300 ease-in-out hover:bg-yellow-500 
                                 hover:shadow-lg ${(isUploading || !selectedFile) ? "opacity-50 cursor-not-allowed" : ""}`}
                     >
-                      Upload and Process
+                      Upload Files
                     </button>
                   </form>
                 </div>
@@ -270,7 +255,7 @@ const FileUpload = () => {
       case 2: // Processing
         return (
           <div className="container mx-auto px-6 py-20 max-w-2xl text-center">
-            <h1 className="text-3xl font-bold text-sky-700 mb-10">Processing Your File</h1>
+            <h1 className="text-3xl font-bold text-sky-700 mb-10">Processing Your Files</h1>
             
             <div className="bg-white rounded-lg shadow-lg p-10">
               <div className="animate-pulse flex flex-col items-center mb-6">
@@ -280,7 +265,7 @@ const FileUpload = () => {
               </div>
               
               <p className="text-xl font-medium text-gray-700 mb-6">
-                Generating documentation for <span className="font-bold text-sky-700">{selectedFile?.name}</span>
+                Uploading files to <span className="font-bold text-sky-700">{project?.name}</span>
               </p>
               
               <div className="mb-4">
@@ -299,10 +284,10 @@ const FileUpload = () => {
           </div>
         );
         
-      case 3: // Complete
+      case 3: // Complete - Navigate to exclusions
         return (
           <div className="container mx-auto px-6 py-20 max-w-2xl text-center">
-            <h1 className="text-3xl font-bold text-sky-700 mb-10">Documentation Generated!</h1>
+            <h1 className="text-3xl font-bold text-sky-700 mb-10">Files Uploaded Successfully!</h1>
             
             <div className="bg-white rounded-lg shadow-lg p-10">
               <div className="flex justify-center mb-6">
@@ -312,32 +297,25 @@ const FileUpload = () => {
               </div>
               
               <p className="text-xl font-medium text-gray-700 mb-6">
-                We've successfully created documentation for <span className="font-bold text-sky-700">{projectName}</span>
+                Files have been uploaded to <span className="font-bold text-sky-700">{project?.name}</span>
               </p>
               
               <p className="text-gray-600 mb-8">
-                Your Python file has been analyzed and documented.
+                Next, you can set exclusions for what to skip during documentation generation.
               </p>
               
               <div className="flex flex-col md:flex-row justify-center space-y-4 md:space-y-0 md:space-x-4">
                 <button
-                  onClick={() => navigate('/dashboard')}
-                  className="bg-sky-600 text-white px-5 py-3 rounded-lg font-medium hover:bg-sky-700 transition-colors"
+                  onClick={() => navigate(`/project/${projectId}/exclusions`)}
+                  className="bg-yellow-600 text-white px-5 py-3 rounded-lg font-medium hover:bg-yellow-700 transition-colors"
                 >
-                  View Documentation
+                  Set Exclusions
                 </button>
                 <button
-                  onClick={() => {
-                    setProcessingStep(1);
-                    setSelectedFile(null);
-                    setProjectName("");
-                    if (fileInputRef.current) {
-                      fileInputRef.current.value = null;
-                    }
-                  }}
+                  onClick={() => navigate(`/project/${projectId}`)}
                   className="bg-white text-sky-700 border border-sky-300 px-5 py-3 rounded-lg font-medium hover:bg-sky-50 transition-colors"
                 >
-                  Upload Another File
+                  Back to Project
                 </button>
               </div>
             </div>
@@ -348,6 +326,14 @@ const FileUpload = () => {
         return null;
     }
   };
+
+  if (!project) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-sky-600"></div>
+      </div>
+    );
+  }
 
   return renderStepContent();
 };

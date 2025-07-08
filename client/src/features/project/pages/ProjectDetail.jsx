@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsAPI, filesAPI } from '../../../shared/services/api';
 import { toast } from 'react-toastify';
 import { notifySuccess, notifyError, notifyInfo, notifyLoading, updateToast } from '../../../shared/utils/toast';
@@ -7,6 +7,7 @@ import { handleApiError } from '../../../shared/utils/errorHandler';
 
 const ProjectDetail = () => {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -165,6 +166,90 @@ const ProjectDetail = () => {
             </p>
           </div>
           
+          {/* PROJECT PROGRESS STEPS */}
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-4">Project Progress</h2>
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <div className="flex items-center justify-between">
+                {/* Step 1: Project Created */}
+                <div className="flex items-center">
+                  <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                    <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <span className="ml-2 text-sm font-medium text-green-600">Project Created</span>
+                </div>
+                
+                <div className="flex-1 h-px bg-gray-300 mx-4"></div>
+                
+                {/* Step 2: Upload Files */}
+                <div className="flex items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                    files.length > 0 ? 'bg-green-100' : 'bg-gray-100'
+                  }`}>
+                    {files.length > 0 ? (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    ) : (
+                      <span className="text-gray-400 text-sm">2</span>
+                    )}
+                  </div>
+                  <span className={`ml-2 text-sm font-medium ${
+                    files.length > 0 ? 'text-green-600' : 'text-gray-400'
+                  }`}>
+                    Upload Files
+                  </span>
+                </div>
+                
+                <div className="flex-1 h-px bg-gray-300 mx-4"></div>
+                
+                {/* Step 3: Set Exclusions */}
+                <div className="flex items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                    project?.exclusions_set ? 'bg-green-100' : 'bg-gray-100'
+                  }`}>
+                    {project?.exclusions_set ? (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    ) : (
+                      <span className="text-gray-400 text-sm">3</span>
+                    )}
+                  </div>
+                  <span className={`ml-2 text-sm font-medium ${
+                    project?.exclusions_set ? 'text-green-600' : 'text-gray-400'
+                  }`}>
+                    Set Exclusions
+                  </span>
+                </div>
+                
+                <div className="flex-1 h-px bg-gray-300 mx-4"></div>
+                
+                {/* Step 4: Generate Docs */}
+                <div className="flex items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                    project?.status === 'complete' ? 'bg-green-100' : 'bg-gray-100'
+                  }`}>
+                    {project?.status === 'complete' ? (
+                      <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    ) : (
+                      <span className="text-gray-400 text-sm">4</span>
+                    )}
+                  </div>
+                  <span className={`ml-2 text-sm font-medium ${
+                    project?.status === 'complete' ? 'text-green-600' : 'text-gray-400'
+                  }`}>
+                    Generate Docs
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
           <div className="mb-8">
             <h2 className="text-xl font-semibold mb-4">Project Files</h2>
             {files.length === 0 ? (
@@ -257,6 +342,48 @@ const ProjectDetail = () => {
                 </table>
               </div>
             )}
+          </div>
+          
+          {/* NEXT STEPS NAVIGATION */}
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-4">Next Steps</h2>
+            <div className="flex space-x-4">
+              {files.length === 0 ? (
+                <Link
+                  to={`/project/${id}/upload`}
+                  className="bg-sky-600 hover:bg-sky-700 text-white px-6 py-3 rounded-md flex items-center"
+                >
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  Upload Files
+                </Link>
+              ) : !project?.exclusions_set ? (
+                <Link
+                  to={`/project/${id}/exclusions`}
+                  className="bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-3 rounded-md flex items-center"
+                >
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4" />
+                  </svg>
+                  Set Exclusions
+                </Link>
+              ) : project?.status !== 'complete' ? (
+                <button
+                  onClick={() => navigate(`/project/${id}/generate`)}
+                  className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-md flex items-center"
+                >
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Generate Documentation
+                </button>
+              ) : (
+                <div className="text-green-600 font-medium">
+                  ✅ Project Complete! Ready to export documentation.
+                </div>
+              )}
+            </div>
           </div>
           
           <div className="flex space-x-4">

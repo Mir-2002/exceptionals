@@ -16,6 +16,8 @@ import ProjectDetail from "./features/project/pages/ProjectDetail";
 import DocumentationViewer from './features/documentation/pages/DocumentationViewer';
 import EditDocumentation from './features/documentation/pages/EditDocumentation';
 import FileDocumentation from './features/documentation/pages/FileDocumentation';
+import ExclusionSettings from './features/project/pages/ExclusionSettings';
+import GenerateDocumentation from './features/documentation/pages/GenerateDocumentation';
 
 // Auth components
 import Register from "./features/auth/pages/Register";
@@ -24,6 +26,9 @@ import AuthTest from './features/auth/pages/AuthTest';
 import { AuthProvider } from "./shared/contexts/AuthContext";
 import GitHubCallback from './features/auth/pages/GitHubCallback';
 import ProtectedRoute from './shared/components/ProtectedRoute';
+
+// Test component
+import TestRoutes from './features/test/pages/TestRoutes';
 
 function App() {
   return (
@@ -36,29 +41,24 @@ function App() {
             <Route path="/register" element={<Register />} />
             <Route path="/about" element={<About />} />
             
-            {/* Protect the dashboard route */}
-            <Route path="/dashboard" element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            } />
+            {/* ADD TEST ROUTES PAGE */}
+            <Route path="/test-routes" element={<TestRoutes />} />
             
-            {/* Add other protected routes as needed */}
-            <Route path="/upload-selection" element={
-              <ProtectedRoute>
-                <UploadSelection />
-              </ProtectedRoute>
-            } />
+            {/* TEMPORARILY REMOVE PROTECTION FOR TESTING */}
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/upload-selection" element={<UploadSelection />} />
             
             <Route path="/file-upload" element={<FileUpload />} />
             <Route path="/folder-upload" element={<FolderUpload />} />
             <Route path="/repo-upload" element={<RepoUpload />} />
             <Route path="/auth-test" element={<AuthTest />} />
             <Route path="/project/:id" element={<ProjectDetail />} />
+            <Route path="/project/:id/generate" element={<GenerateDocumentation />} />
             <Route path="/project/:id/documentation" element={<DocumentationViewer />} />
             <Route path="/file/:fileId" element={<FileDocumentation />} />
             <Route path="/file/:fileId/edit" element={<EditDocumentation />} />
             <Route path="/auth/github/callback" element={<GitHubCallback />} />
+            <Route path="/project/:id/exclusions" element={<ExclusionSettings />} />
           </Route>
         </Routes>
       </Router>
