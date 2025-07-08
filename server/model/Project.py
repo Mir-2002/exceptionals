@@ -6,10 +6,11 @@ TO DO:
 """
 
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from model.File import FolderNode
+from model.Documentation import FileDocumentationResponse
 from utils.custom_types import PyObjectId
 
 
@@ -17,10 +18,13 @@ class ProjectModel(BaseModel):
     name: str
     excluded_directories: List[str] = []
     excluded_files: List[str] = []
-
     description: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     user_id : Optional[PyObjectId] = None
+    has_project_documentation: bool = False
+    project_documentation_summary: Optional[Dict[str, Any]] = None
+    total_documented_items: int = 0
+    documentation_completeness: float = 0.0  # Percentage of files documented
 
     # Validators
     @field_validator("name")
@@ -44,11 +48,6 @@ class ProjectModel(BaseModel):
 class ProjectInDBModel(ProjectModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        json_encoders={ObjectId: str}
-    )
-
     model_config = {
         "arbitrary_types_allowed": True,
         "populate_by_name": True,
@@ -64,7 +63,10 @@ class ProjectResponseModel(ProjectModel):
     file_count: Optional[int] = 0
     processed_files: Optional[int] = 0
     processing_status: Optional[str] = "Not Started"  # "Not Started", "In Progress", "Completed", "Failed"
-
+    project_documented: Optional[bool] = False
+    project_documentation_generated_at: Optional[datetime] = None
+    documented_files_count: Optional[int] = 0
+    total_documented_items: Optional[int] = 0
 
     model_config = ConfigDict(
         populate_by_name=True,

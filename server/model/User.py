@@ -7,7 +7,6 @@ from utils.custom_types import PyObjectId
 
 
 class UserModel(BaseModel):
-    id: Optional[str] = Field(None, alias="_id")
     email: EmailStr
     username: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -51,6 +50,15 @@ class UserInDBModel(UserModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     hashed_password: str
 
+    model_config = {
+        "json_encoders": {
+            ObjectId: str,
+            PyObjectId: str
+        },
+        "arbitrary_types_allowed": True,
+        "populate_by_name": True
+    }
+
 class BaseResponseModel(BaseModel):
     id: str = Field(alias="_id")
     username: str
@@ -65,10 +73,13 @@ class BaseResponseModel(BaseModel):
             return str(value)
         return value
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        json_encoders={ObjectId: str}
-    )
+    model_config = {
+        "populate_by_name": True,
+        "json_encoders": {
+            ObjectId: str,
+            PyObjectId: str
+        }
+    }
 
 class DeleteUserResponseModel(BaseResponseModel):
     message: str = "User deleted successfully"

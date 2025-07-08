@@ -127,7 +127,7 @@ def apply_exclusions_to_structure(
     return structure
 
 async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
-    """Upload a Python file to a project and extract its structure."""
+    """Upload a Python file to a project and extract its structure - database-only storage."""
     if not ObjectId.is_valid(project_id):
         raise HTTPException(status_code=400, detail="Invalid project ID")
     
@@ -159,19 +159,20 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             status_code=409, detail=f"File {safe_filename} already exists"
         )
 
-    # Create project directory if it doesn't exist
-    project_dir = os.path.join(UPLOAD_DIR, project_id)
-    os.makedirs(project_dir, exist_ok=True)
-
-    # Save file with temporary name first
-    temp_file_path = os.path.join(project_dir, f"temp_{datetime.now().timestamp()}.py")
-    file_path = os.path.join(project_dir, safe_filename)
-
+    temp_file_path = None
     try:
-        # Read and save file content (filesystem operation, outside transaction)
+        # Read file content
         content = await file.read()
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
+        content_str = content.decode('utf-8')
+        
+        # Create temporary file for parsing (will be deleted after processing)
+        import tempfile
+        import uuid
+        temp_file_path = os.path.join(tempfile.gettempdir(), f"temp_{uuid.uuid4()}.py")
+        
+        # Write to temporary file for parsing
+        with open(temp_file_path, "w", encoding="utf-8") as f:
+            f.write(content_str)
 
         try:
             # Analyze file structure using the parser
@@ -188,14 +189,11 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
             }
             processed = False
 
-        # Rename to final filename (filesystem operation)
-        os.rename(temp_file_path, file_path)
-
-        # Create file document
+        # Create file document - store content in database, no file_path
         file_doc = FileModel(
             project_id=project_id_obj,
             file_name=safe_filename,
-            file_path=file_path,
+            content=content_str,  # Store content in database
             content_type=file.content_type,
             size=len(content),
             processed=processed,
@@ -208,6 +206,7 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
                     else structure.dict() if hasattr(structure, "dict") else None
                 )
             ),
+            # Remove file_path - not storing on disk
         )
 
         # Database operations with transaction fallback
@@ -260,27 +259,20 @@ async def upload_file(project_id: str, file: UploadFile, db=Depends(get_db)):
                 raise HTTPException(status_code=500, detail="Failed to create file record")
 
         # Prepare response outside transaction
-        logger.info(f"Successfully uploaded file {safe_filename} to project {project_id}")
+        logger.info(f"Successfully uploaded file {safe_filename} to project {project_id} (database-only)")
         
         return create_document_model(FileResponseModel, created_file)
 
     except Exception as e:
-        # Clean up temp file if it exists
-        if os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except:
-                pass
-                
-        # If the final file was created, try to remove it too
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except:
-                pass
-                
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+    finally:
+        # Always clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception as cleanup_e:
+                logger.warning(f"Could not clean up temp file {temp_file_path}: {str(cleanup_e)}")
 
 async def get_project_files(
     project_id: str, skip: int = 0, limit: int = 100, db=Depends(get_db)
@@ -350,7 +342,7 @@ async def get_file_structure(
     use_default_exclusions: bool = True,
     db=Depends(get_db),
 ):
-    """Get the structure of a file."""
+    """Get the structure of a file from database content."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
@@ -363,7 +355,7 @@ async def get_file_structure(
         file_exclusions = file.get("excluded_classes", [])
         function_exclusions = file.get("excluded_functions", [])
 
-        # Return structure if available, or parse file if not processed yet
+        # Return structure if available, or parse from content if not processed yet
         if file.get("processed") and file.get("structure"):
             try:
                 structure = FileStructure.model_validate(file["structure"])
@@ -380,7 +372,7 @@ async def get_file_structure(
                         if hasattr(func, "code"):
                             func.code = None
 
-                # Apply exclusions to cached structure using helper function
+                # Apply exclusions to cached structure
                 structure = apply_exclusions_to_structure(
                     structure, file_exclusions, function_exclusions, use_default_exclusions
                 )
@@ -390,51 +382,68 @@ async def get_file_structure(
                 logger.error(f"Error validating file structure: {str(e)}")
                 raise HTTPException(status_code=500, detail="Invalid file structure format")
 
-        # If file exists but structure not processed, parse it now
-        if os.path.exists(file["file_path"]):
-            structure = code_parser.parse_file(file["file_path"])
+        # If file exists but structure not processed, parse from content
+        content = file.get("content")
+        if content:
+            # Create temporary file for parsing
+            import tempfile
+            import uuid
+            temp_file_path = os.path.join(tempfile.gettempdir(), f"temp_{uuid.uuid4()}.py")
+            
+            try:
+                # Write content to temporary file
+                with open(temp_file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                
+                # Parse structure
+                structure = code_parser.parse_file(temp_file_path)
 
-            # Prepare structure for database
-            structure_data = structure
-            if not isinstance(structure, dict):
-                if hasattr(structure, "model_dump"):
-                    structure_data = structure.model_dump()
-                elif hasattr(structure, "dict"):
-                    structure_data = structure.dict()
+                # Prepare structure for database
+                structure_data = structure
+                if not isinstance(structure, dict):
+                    if hasattr(structure, "model_dump"):
+                        structure_data = structure.model_dump()
+                    elif hasattr(structure, "dict"):
+                        structure_data = structure.dict()
 
-            # Update the file with structure - with transaction fallback
-            async with get_transaction_session(f"Update file structure for {file_id}") as session:
-                if session:
-                    # With transaction
-                    await db.files.update_one(
-                        {"_id": ObjectId(file_id)},
-                        {"$set": {"structure": structure_data, "processed": True}},
-                        session=session
-                    )
-                else:
-                    # Without transaction
-                    await db.files.update_one(
-                        {"_id": ObjectId(file_id)},
-                        {"$set": {"structure": structure_data, "processed": True}}
-                    )
+                # Update the file with structure
+                async with get_transaction_session(f"Update file structure for {file_id}") as session:
+                    if session:
+                        await db.files.update_one(
+                            {"_id": ObjectId(file_id)},
+                            {"$set": {"structure": structure_data, "processed": True}},
+                            session=session
+                        )
+                    else:
+                        await db.files.update_one(
+                            {"_id": ObjectId(file_id)},
+                            {"$set": {"structure": structure_data, "processed": True}}
+                        )
 
-            # Apply exclusions to newly parsed structure using helper function
-            structure = apply_exclusions_to_structure(
-                structure, file_exclusions, function_exclusions, use_default_exclusions
-            )
+                # Apply exclusions
+                structure = apply_exclusions_to_structure(
+                    structure, file_exclusions, function_exclusions, use_default_exclusions
+                )
 
-            return structure
+                return structure
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                    except:
+                        pass
         else:
             raise HTTPException(status_code=404, detail="File content not found")
+            
     except HTTPException as http_ex:
-        # Re-raise HTTP exceptions
         raise http_ex
     except Exception as e:
         logger.error(f"Error getting file structure: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving file structure: {str(e)}")
 
 async def get_file_content(file_id: str, db=Depends(get_db)):
-    """Get the content of a file."""
+    """Get the content of a file from database."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
@@ -443,18 +452,10 @@ async def get_file_content(file_id: str, db=Depends(get_db)):
         if not file:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # Read file content
-        if not os.path.exists(file["file_path"]):
-            raise HTTPException(status_code=404, detail="File content not found")
-            
-        try:
-            # Try UTF-8 first
-            with open(file["file_path"], "r", encoding="utf-8") as f:
-                content = f.read()
-        except UnicodeDecodeError:
-            # Fall back to latin-1 if UTF-8 fails
-            with open(file["file_path"], "r", encoding="latin-1") as f:
-                content = f.read()
+        # Get content from database instead of file system
+        content = file.get("content")
+        if content is None:
+            raise HTTPException(status_code=404, detail="File content not available")
 
         return create_document_model(FileContentResponse, {
             "file_id": file_id,
@@ -472,7 +473,7 @@ async def get_file_content(file_id: str, db=Depends(get_db)):
         )
 
 async def delete_file(file_id: str, db=Depends(get_db)):
-    """Delete a file with transaction support."""
+    """Delete a file - database-only storage version."""
     if not ObjectId.is_valid(file_id):
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
@@ -481,8 +482,7 @@ async def delete_file(file_id: str, db=Depends(get_db)):
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
         
-    # Remember file data for response and cleanup
-    file_path = file.get("file_path")
+    # Remember file data for response
     file_name = file.get("file_name")
     project_id = file.get("project_id")
     
@@ -534,15 +534,7 @@ async def delete_file(file_id: str, db=Depends(get_db)):
                         }
                     )
         
-        # After successful database transaction, delete the file from disk
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"Deleted file from disk: {file_path}")
-            except Exception as e:
-                logger.error(f"Error deleting file from disk: {str(e)}")
-                # Continue with success response even if file delete fails
-                # since the database operation succeeded
+        # No file system cleanup needed for database-only storage
         
         logger.info(f"Successfully deleted file {file_name} (ID: {file_id})")
         return FileBasicResponse(

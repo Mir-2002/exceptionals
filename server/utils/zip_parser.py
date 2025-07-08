@@ -2,176 +2,186 @@ import os
 import zipfile
 import tempfile
 import shutil
+import uuid
+import logging
+from io import BytesIO
 from fastapi import UploadFile, HTTPException
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+from bson import ObjectId
+from model.File import FileUploadInfo, FileModel
 from utils.parser import CodeParserService
+
+logger = logging.getLogger(__name__)
 
 # Configuration
 MAX_ZIP_SIZE = 100 * 1024 * 1024  # 100MB limit
-ALLOWED_EXTENSIONS = {".py", ".txt", ".md", ".json", ".yaml", ".yml"}  # Add more as needed
+ALLOWED_EXTENSIONS = {".py", ".txt", ".md", ".json", ".yaml", ".yml"}
 
-async def extract_and_process_zip(
-    zip_file: UploadFile, 
-    project_id: str,
-    project_dir: str
-) -> List[Dict[str, Any]]:
-    """
-    Extract a ZIP file and process its contents.
-    
-    Args:
-        zip_file: The uploaded ZIP file
-        project_id: The ID of the project the files belong to
-        project_dir: The directory where project files should be stored
-    
-    Returns:
-        List of file metadata dictionaries for database insertion
-    """
-    # Validate zip file
-    if not zip_file.filename.endswith('.zip'):
-        raise HTTPException(status_code=400, detail="Only ZIP files are accepted")
-    
-    # Create project directory if it doesn't exist
-    os.makedirs(project_dir, exist_ok=True)
-    
-    # Process the zip file
-    with tempfile.TemporaryDirectory() as temp_dir:
-        try:
-            # Read the content and save to temp file
-            content = await zip_file.read()
-            
-            # Check size
-            if len(content) > MAX_ZIP_SIZE:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"ZIP file too large. Maximum size is {MAX_ZIP_SIZE/1024/1024}MB"
-                )
-            
-            # Save to temp file
-            temp_zip_path = os.path.join(temp_dir, "upload.zip")
-            with open(temp_zip_path, "wb") as f:
-                f.write(content)
-            
-            # Check if file is a valid zip
-            if not is_valid_zip(temp_zip_path):
-                raise HTTPException(status_code=400, detail="Invalid or corrupted ZIP file")
-                
-            # Extract with directory structure preserved
-            extract_dir = os.path.join(temp_dir, "extracted")
-            os.makedirs(extract_dir, exist_ok=True)
-            
-            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-                # Check for malicious paths (path traversal protection)
-                for zip_info in zip_ref.infolist():
-                    if zip_info.filename.startswith('/') or '..' in zip_info.filename:
-                        raise HTTPException(
-                            status_code=400, 
-                            detail="ZIP contains invalid paths. Security violation detected."
-                        )
-                
-                # Extract the zip
-                zip_ref.extractall(extract_dir)
-            
-            # Process extracted files and build metadata
-            file_metadata_list = process_extracted_files(extract_dir, project_dir, project_id)
-            
-            return file_metadata_list
-            
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="Invalid ZIP file format")
-        except Exception as e:
-            # Log the exception
-            print(f"Error processing ZIP file: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to process ZIP file: {str(e)}")
+# Default excluded folders
+DEFAULT_EXCLUDED_FOLDERS = [
+    "__pycache__",
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",
+    ".pytest_cache",
+    ".tox",
+    "venv",
+    "env",
+    ".venv",
+    ".env",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+    "Thumbs.db"
+]
 
-def is_valid_zip(file_path: str) -> bool:
-    """Check if a file is a valid ZIP file."""
-    try:
-        with zipfile.ZipFile(file_path, 'r') as zf:
-            return True
-    except zipfile.BadZipFile:
-        return False
-
-def process_extracted_files(
-    extract_dir: str, 
-    project_dir: str, 
-    project_id: str
-) -> List[Dict[str, Any]]:
-    """
-    Process extracted files, copy to project directory, and generate metadata.
-    
-    Args:
-        extract_dir: The directory where files were extracted
-        project_dir: The destination project directory 
-        project_id: The ID of the project
-    
-    Returns:
-        List of file metadata dictionaries for database insertion
-    """
+async def extract_and_process_zip(zip_file: UploadFile, project_id: str, db) -> List[FileUploadInfo]:
+    """Extract and process ZIP file - database-only storage."""
     file_metadata_list = []
-    root_dir = find_project_root(extract_dir)
+    temp_dir = None
     
-    # Initialize the parser service
-    parser_service = CodeParserService()
-    
-    # Walk through the extracted directory structure
-    for root, dirs, files in os.walk(root_dir):
-        for file in files:
-            file_path = os.path.join(root, file)
+    try:
+        # Validate ZIP file size
+        zip_content = await zip_file.read()
+        if len(zip_content) > MAX_ZIP_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"ZIP file too large. Maximum size is {MAX_ZIP_SIZE/(1024*1024)}MB"
+            )
+        
+        # Create temporary directory for extraction
+        temp_dir = os.path.join(tempfile.gettempdir(), f"zip_extract_{uuid.uuid4()}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Extract ZIP
+        with zipfile.ZipFile(BytesIO(zip_content), 'r') as zip_ref:
+            # Security check: prevent path traversal attacks
+            for member in zip_ref.namelist():
+                if os.path.isabs(member) or ".." in member:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="ZIP file contains unsafe paths"
+                    )
+            zip_ref.extractall(temp_dir)
+        
+        # Find the actual project root
+        root_dir = find_project_root(temp_dir)
+        
+        # Initialize parser
+        code_parser = CodeParserService()
+        
+        # Process each Python file
+        for root, dirs, files in os.walk(root_dir):
+            # Skip excluded directories
+            dirs[:] = [d for d in dirs if d not in DEFAULT_EXCLUDED_FOLDERS]
             
-            # Skip files we don't want to process
-            file_ext = os.path.splitext(file)[1].lower()
-            if file_ext not in ALLOWED_EXTENSIONS:
-                continue
-                
-            # Get the relative path from extraction root
-            rel_path = os.path.relpath(file_path, root_dir)
-            
-            # Create destination path
-            dest_path = os.path.join(project_dir, rel_path)
-            dest_dir = os.path.dirname(dest_path)
-            
-            # Create necessary directories
-            os.makedirs(dest_dir, exist_ok=True)
-            
-            # Copy file to project directory
-            shutil.copy2(file_path, dest_path)
-            
-            # Process file content and structure if it's a Python file
-            with open(file_path, 'rb') as f:
-                content = f.read()
-                
-            is_python = file.endswith('.py')
-            structure = None
-            processed = False
-            
-            if is_python:
-                try:
-                    # Use the proper parser service instead of the non-existent parse_python_file function
-                    structure = parser_service.parse_file(dest_path)
-                    processed = True if structure and not structure.get("error") else False
-                except UnicodeDecodeError:
-                    # Not a text file or not UTF-8 encoded
-                    processed = False
-                except Exception as e:
-                    print(f"Error parsing file {dest_path}: {str(e)}")
-                    processed = False
-            
-            # Create metadata
-            metadata = {
-                "project_id": project_id,
-                "file_name": file,
-                "file_path": dest_path,
-                "relative_path": rel_path,
-                "content_type": "text/x-python" if is_python else "application/octet-stream",
-                "size": len(content),
-                "processed": processed,
-                "structure": structure
-            }
-            
-            file_metadata_list.append(metadata)
-            
-    return file_metadata_list
+            for file in files:
+                if file.endswith('.py'):
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(file_path, root_dir)
+                    
+                    # Skip if file already exists in project
+                    existing_file = await db.files.find_one({
+                        "project_id": ObjectId(project_id),
+                        "file_name": file
+                    })
+                    
+                    if existing_file:
+                        logger.warning(f"File {file} already exists in project, skipping")
+                        continue
+                    
+                    try:
+                        # Read file content
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # Validate content size
+                        content_size = len(content.encode('utf-8'))
+                        if content_size > FileModel.MAX_FILE_SIZE:
+                            logger.warning(f"File {file} too large ({content_size} bytes), skipping")
+                            continue
+                        
+                        # Parse structure
+                        try:
+                            structure = code_parser.parse_file(file_path)
+                            processed = True
+                        except Exception as parse_error:
+                            logger.warning(f"Could not parse {file}: {str(parse_error)}")
+                            structure = {
+                                "file_name": file,
+                                "error": f"Parse error: {str(parse_error)}",
+                                "classes": [],
+                                "functions": [],
+                            }
+                            processed = False
+                        
+                        # Create file document with content in database
+                        file_doc = FileModel(
+                            project_id=ObjectId(project_id),
+                            file_name=file,
+                            content=content,  # Store in database
+                            content_type="text/x-python",
+                            size=content_size,
+                            relative_path=relative_path,
+                            processed=processed,
+                            structure=(
+                                structure.model_dump() if hasattr(structure, 'model_dump') 
+                                else structure if isinstance(structure, dict)
+                                else structure.dict() if hasattr(structure, 'dict')
+                                else {}
+                            ),
+                            # No file_path - database-only storage
+                        )
+                        
+                        # Save to database
+                        result = await db.files.insert_one(file_doc.model_dump(by_alias=True))
+                        
+                        file_metadata_list.append(FileUploadInfo(
+                            file_name=file,
+                            file_path=relative_path,  # Keep for response info
+                            size=content_size,
+                            processed=processed,
+                        ))
+                        
+                        logger.info(f"Successfully processed file: {file}")
+                        
+                    except UnicodeDecodeError:
+                        logger.warning(f"File {file} is not valid UTF-8, skipping")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error processing file {file}: {str(e)}")
+                        # Continue with other files
+                        continue
+        
+        if not file_metadata_list:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid Python files found in ZIP archive"
+            )
+        
+        logger.info(f"Successfully processed {len(file_metadata_list)} files from ZIP")
+        return file_metadata_list
+        
+    except HTTPException:
+        raise
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+    except Exception as e:
+        logger.error(f"Error extracting ZIP: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing ZIP file: {str(e)}")
+    finally:
+        # Clean up temporary directory
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                logger.debug(f"Cleaned up temp directory: {temp_dir}")
+            except Exception as cleanup_e:
+                logger.warning(f"Could not clean up temp directory {temp_dir}: {str(cleanup_e)}")
 
 def find_project_root(extract_dir: str) -> str:
     """
@@ -192,17 +202,30 @@ def find_project_root(extract_dir: str) -> str:
     # If there's only one subdirectory and no files at the root level, 
     # consider that subdirectory as the project root
     items = os.listdir(extract_dir)
-    if len(items) == 1 and os.path.isdir(os.path.join(extract_dir, items[0])):
-        potential_root = os.path.join(extract_dir, items[0])
+    
+    # Filter out hidden files and directories for evaluation
+    visible_items = [item for item in items if not item.startswith('.')]
+    
+    if len(visible_items) == 1 and os.path.isdir(os.path.join(extract_dir, visible_items[0])):
+        potential_root = os.path.join(extract_dir, visible_items[0])
         
         # Check if this directory has python files or subdirectories
         has_py_files = False
-        for root, _, files in os.walk(potential_root):
+        has_subdirs = False
+        
+        for root, dirs, files in os.walk(potential_root):
             if any(file.endswith('.py') for file in files):
                 has_py_files = True
                 break
+            if dirs:
+                has_subdirs = True
                 
-        if has_py_files:
+        # If the subdirectory contains Python files or has a reasonable structure,
+        # use it as the root
+        if has_py_files or has_subdirs:
             root_dir = potential_root
+            logger.info(f"Using subdirectory as project root: {os.path.basename(potential_root)}")
     
     return root_dir
+
+# Remove the old process_extracted_files function since we're using database-only storage
