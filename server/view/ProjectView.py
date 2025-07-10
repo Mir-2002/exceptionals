@@ -1,12 +1,26 @@
-from fastapi import APIRouter, Depends, File, Query, UploadFile
-from controller.ProjectController import create, get, remove, update, get_project_structure, set_project_exclusions, get_project_exclusions, upload_project_zip
-from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from controller.ProjectController import create, get, get_user_projects, remove, update, get_project_structure, set_project_exclusions, get_project_exclusions, upload_project_zip
+from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel, UserProjectsResponse
 from model.File import ProjectExclusions, ZipUploadResponseModel
 from utils.db import get_db
 from utils.auth import get_current_user, verify_project_owner
 
 
 router = APIRouter()
+
+# Get all projects for current user - must come before specific project routes
+@router.get("/projects", response_model=UserProjectsResponse)
+async def get_current_user_projects(
+    skip: int = Query(0, ge=0, description="Number of projects to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of projects to return"),
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Get all projects for the currently authenticated user.
+    """
+    user_id = str(current_user["_id"])
+    return await get_user_projects(user_id, skip, limit, db)
 
 @router.post("/projects", response_model=ProjectResponseModel)
 async def create_project(project: ProjectModel, current_user = Depends(get_current_user),db=Depends(get_db)):
@@ -32,8 +46,7 @@ async def get_structure_for_project(project_id: str, use_default_exclusions: boo
     Returns a tree representing the directory structure of the project.
     This is useful for displaying folder organization in a file explorer UI.
     """
-    return await get_project_structure(project_id, use_default_exclusions,
-    db)
+    return await get_project_structure(project_id, use_default_exclusions, db)
 
 @router.post("/projects/{project_id}/exclusions", response_model=ProjectExclusionResponse)
 async def update_project_exclusions(
@@ -67,3 +80,35 @@ async def retrieve_project_exclusions(project_id: str, project_data = Depends(ve
     Get the current exclusions for a project.
     """
     return await get_project_exclusions(project_id, db)
+
+@router.get("/users/{user_id}/projects", response_model=UserProjectsResponse)
+async def get_projects_for_user(
+    user_id: str,
+    skip: int = Query(0, ge=0, description="Number of projects to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of projects to return"),
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Get all projects for a specific user.
+    
+    Users can only access their own projects unless they have admin privileges.
+    """
+    # Ensure user can only access their own projects
+    if str(current_user["_id"]) != user_id:
+        raise HTTPException(status_code=403, detail="Access denied: You can only access your own projects")
+    
+    return await get_user_projects(user_id, skip, limit, db)
+
+@router.get("/users/me/projects", response_model=UserProjectsResponse)
+async def get_my_projects(
+    skip: int = Query(0, ge=0, description="Number of projects to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of projects to return"),
+    current_user = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Get all projects for the currently authenticated user.
+    """
+    user_id = str(current_user["_id"])
+    return await get_user_projects(user_id, skip, limit, db)

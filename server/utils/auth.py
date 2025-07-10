@@ -34,11 +34,22 @@ def create_access_token(data: dict):
     """Create a new access token with 7-day expiration"""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire})
+    
+    # Ensure we have a valid subject
+    username = data.get("username")
+    if not username:
+        raise ValueError("Username is required for token creation")
+    
+    to_encode.update({
+        "exp": expire,
+        "sub": username,  # This will never be None now
+        "user_id": data.get("user_id")  # Include user_id in token
+    })
     
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return {
-        "token": encoded_jwt,
+        "access_token": encoded_jwt,
+        "token_type": "bearer",
         "expires_at": int(expire.timestamp())
     }
 

@@ -120,3 +120,9 @@ class ProjectExclusionResponse(BaseModel):
     success: bool
     message: str
     project_id: str
+
+class UserProjectsResponse(BaseModel):
+    projects: List[dict]
+    total: int
+    skip: int
+    limit: int

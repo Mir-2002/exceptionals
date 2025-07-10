@@ -15,8 +15,7 @@ router = APIRouter()
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str
-    user_id: str
-    username: str
+    user: dict
     expires_at: int
 
 class UserCreate(BaseModel):
@@ -43,16 +42,23 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Create access token
-    token_data = create_access_token(
-        data={"sub": user["username"], "user_id": str(user["_id"])}
-    )
-    
-    return {
-        "access_token": token_data["token"],
-        "token_type": "bearer",
+    # When creating the token, make sure you pass the username
+    token_data = create_access_token({
+        "username": user["username"],  # This is crucial!
+        "user_id": str(user["_id"])
+    })
+
+    # Create user object for frontend
+    user_data = {
         "user_id": str(user["_id"]),
         "username": user["username"],
+        "email": user.get("email", "")  # Include email if available
+    }
+    
+    return {
+        "access_token": token_data["access_token"],
+        "token_type": "bearer",
+        "user" : user_data,
         "expires_at": token_data["expires_at"]
     }
 

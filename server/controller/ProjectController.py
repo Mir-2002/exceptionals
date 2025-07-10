@@ -7,7 +7,8 @@ from typing import List
 from fastapi import Depends, HTTPException, UploadFile
 from model.Project import ProjectDeleteResponseModel, ProjectExclusionResponse, ProjectModel, ProjectResponseModel, ProjectUpdateModel, ProjectUpdateResponseModel, ProjectStructureResponseModel
 from model.File import FileModel, FileNode, FileResponseModel, FileUploadInfo, FolderNode, ProjectExclusions, ZipUploadResponseModel
-from server.controller.FileController import DEFAULT_EXCLUDED_FOLDERS
+from controller.FileController import DEFAULT_EXCLUDED_FOLDERS
+from utils.auth import get_current_user
 from utils.zip_parser import extract_and_process_zip
 from utils.db import get_db, get_transaction_session
 from bson import ObjectId
@@ -88,53 +89,71 @@ async def create(project: ProjectModel, current_user ,db=Depends(get_db)):
     """
     Create a new project with transaction support if available.
     """
+    logger.info(f"Creating project for user: {current_user['_id']}")
+    logger.info(f"Project data: {project.model_dump()}")
+    
     # Check for existing project (outside transaction for efficiency)
     existing_project = await db.projects.find_one({"name": project.name})
     if existing_project:
+        logger.warning(f"Project with name '{project.name}' already exists")
         raise HTTPException(
             status_code=400,
             detail="Project with this name already exists"
         )
     
     if db is None:
+        logger.error("Database connection error")
         raise HTTPException(status_code=500, detail="Database connection error")
     
     try:
         # Insert the project with transaction if available
         project_data = project.model_dump(by_alias=True)
-        project_data["user_id"] = current_user["_id"]
+        
+        # Convert user_id to ObjectId for consistent storage
+        if isinstance(current_user["_id"], str):
+            project_data["user_id"] = ObjectId(current_user["_id"])
+        else:
+            project_data["user_id"] = current_user["_id"]
+            
+        logger.info(f"Prepared project data: {project_data}")
+        
         created_project = None
         
         async with get_transaction_session("Create new project") as session:
             if session:
-                # With transaction
+                logger.info("Using transaction session")
                 result = await db.projects.insert_one(project_data, session=session)
+                logger.info(f"Insert result with transaction: {result.inserted_id}")
                 
-                # Fetch the complete document within transaction
                 created_project = await db.projects.find_one(
                     {"_id": result.inserted_id}, 
                     session=session
                 )
+                logger.info(f"Retrieved project with transaction: {created_project}")
             else:
-                # Without transaction
+                logger.info("Using direct database operation (no transaction)")
                 result = await db.projects.insert_one(project_data)
+                logger.info(f"Insert result without transaction: {result.inserted_id}")
                 
-                # Fetch the complete document
                 created_project = await db.projects.find_one({"_id": result.inserted_id})
+                logger.info(f"Retrieved project without transaction: {created_project}")
         
         if not created_project:
+            logger.error("Project created but could not be retrieved")
             raise HTTPException(
                 status_code=500,
                 detail="Project created but could not be retrieved"
             )
         
         prepared_project = prepare_document_for_response(created_project)
-        logger.info(f"Created new project: {project_data.get('name')}")
+        logger.info(f"Project created successfully with ID: {result.inserted_id}")
+        logger.info(f"Prepared project response: {prepared_project}")
 
         return ProjectResponseModel(
             **prepared_project,
             message="Project created successfully")
     except HTTPException as http_ex:
+        logger.error(f"HTTP Exception in create: {http_ex}")
         raise http_ex
     except Exception as e:
         logger.error(f"Error creating project: {e}")
@@ -660,3 +679,70 @@ async def upload_project_zip(project_id: str, zip_file: UploadFile, db=Depends(g
         raise HTTPException(
             status_code=500, detail=f"Error processing ZIP file: {str(e)}"
         )
+    
+async def get_user_projects(user_id: str, skip: int = 0, limit: int = 100, db=Depends(get_db)):
+    """
+    Get all projects for a specific user with file statistics.
+    """
+    
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection error")
+    
+    logger.info(f"Fetching projects for user_id: {user_id}")
+    
+    try:
+        user_id_obj = ObjectId(user_id)
+        
+        # Get projects for the user
+        projects_cursor = db.projects.find(
+            {"user_id": user_id_obj}
+        ).skip(skip).limit(limit)
+        
+        projects = await projects_cursor.to_list(length=None)
+        
+        # Add file statistics for each project
+        for project in projects:
+            project_id = project["_id"]
+            
+            # Count total files
+            total_files = await db.files.count_documents({"project_id": project_id})
+            
+            # Count processed files
+            processed_files = await db.files.count_documents({
+                "project_id": project_id, 
+                "processed": True
+            })
+            
+            # Count documented files (files that have documentation)
+            documented_files = await db.files.count_documents({
+                "project_id": project_id,
+                "documentation": {"$exists": True, "$ne": None}
+            })
+            
+            # Add statistics to project
+            project["total_files"] = total_files
+            project["processed_files"] = processed_files
+            project["documented_files_count"] = documented_files
+            
+            # Don't convert here - do it only once at the end
+        
+        # Prepare all projects for response (only once)
+        prepared_projects = [prepare_document_for_response(project) for project in projects]
+        
+        logger.info(f"Retrieved {len(prepared_projects)} projects for user {user_id}")
+        
+        return {
+            "projects": prepared_projects,
+            "total": len(prepared_projects),
+            "skip": skip,
+            "limit": limit
+        }
+        
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Error getting user projects: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving user projects: {str(e)}")
